@@ -1,16 +1,14 @@
-// Copyright (c) 2014-2016 The Kreds Developers
+// Copyright (c) 2014 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_TIMEDATA_H
-#define KREDS_TIMEDATA_H
+#ifndef BITCOIN_TIMEDATA_H
+#define BITCOIN_TIMEDATA_H
 
 #include <algorithm>
 #include <assert.h>
 #include <stdint.h>
 #include <vector>
-
-static const int64_t DEFAULT_MAX_TIME_ADJUSTMENT = 70 * 60;
 
 class CNetAddr;
 
@@ -75,4 +73,4 @@ int64_t GetTimeOffset();
 int64_t GetAdjustedTime();
 void AddTimeData(const CNetAddr& ip, int64_t nTime);
 
-#endif // KREDS_TIMEDATA_H
+#endif // BITCOIN_TIMEDATA_H
