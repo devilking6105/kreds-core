@@ -20,7 +20,6 @@
 #include "masternodeman.h"//
 #include "validation.h"
 #include "masternode.h" //
-#include "masternode-pos.h" //
 #include "spork.h"//
 #include "activemasternode.h"//
 #include "merkleblock.h"
@@ -44,7 +43,7 @@
 #include <boost/thread.hpp>
 
 #if defined(NDEBUG)
-# error "Kreds cannot be compiled without assertions."
+# error "HTH Core cannot be compiled without assertions."
 #endif
 
 
