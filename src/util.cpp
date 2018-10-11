@@ -1,12 +1,13 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers 
-// Copyright (c) 2015-2017 The Dash developers 
-// Copyright (c) 2015-2017 The Kreds developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include "config/kreds-config.h"
+#include "config/hth-config.h"
 #endif
 
 #include "util.h"
@@ -25,6 +26,7 @@
 #include <pthread.h>
 #include <pthread_np.h>
 #endif
+
 
 #ifndef WIN32
 // for posix_fallocate
@@ -75,10 +77,6 @@
 #include <sys/prctl.h>
 #endif
 
-#ifdef HAVE_MALLOPT_ARENA_MAX
-#include <malloc.h>
-#endif
-
 #include <boost/algorithm/string/case_conv.hpp> // for to_lower()
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/predicate.hpp> // for startswith() and endswith()
@@ -106,45 +104,34 @@ namespace boost {
 
 using namespace std;
 
-/**TODO-- port to kreds*/
-//Kreds only features
+//HTH only features
 bool fMasterNode = false;
-string strMasterNodePrivKey = "";
-string strMasterNodeAddr = "";
-bool fProUserModeDarksendInstantX = false;
-bool fProUserModeDarksendInstantX2 = false;
 bool fLiteMode = false;
-bool fEnableInstantX = true;
-int nInstantXDepth = 5;
-int nDarksendRounds = 2;
-int nAnonymizeDashAmount = 1000;
-int nLiquidityProvider = 0;
-/** Spork enforcement enabled time */
-int64_t enforceMasternodePaymentsTime = 4085657524;
-bool fSucessfullyLoaded = false;
-bool fEnableDarksend = false;
-bool fDarksendMultiSession = false;
-/** All denominations used by darksend */
-std::vector<CAmount> darkSendDenominations;
-string strBudgetMode = "";
-//TODO-- ends
+/**
+    nWalletBackups:
+        1..10   - number of automatic backups to keep
+        0       - disabled by command-line
+        -1      - disabled because of some error during run-time
+        -2      - disabled because wallet was locked and we were not able to replenish keypool
+*/
+int nWalletBackups = 10;
 
-const char * const KREDS_CONF_FILENAME = "kreds.conf";
-const char * const KREDS_PID_FILENAME = "kreds.pid";
+const char * const BITCOIN_CONF_FILENAME = "hth.conf";
+const char * const BITCOIN_PID_FILENAME = "hthd.pid";
 
-
-CCriticalSection cs_args;
 map<string, string> mapArgs;
-static map<string, vector<string> > _mapMultiArgs;
-const map<string, vector<string> >& mapMultiArgs = _mapMultiArgs;
+map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
 bool fPrintToConsole = false;
 bool fPrintToDebugLog = true;
-
+bool fDaemon = false;
+bool fServer = false;
+string strMiscWarning;
 bool fLogTimestamps = DEFAULT_LOGTIMESTAMPS;
 bool fLogTimeMicros = DEFAULT_LOGTIMEMICROS;
+bool fLogThreadNames = DEFAULT_LOGTHREADNAMES;
 bool fLogIPs = DEFAULT_LOGIPS;
-std::atomic<bool> fReopenDebugLog(false);
+volatile bool fReopenDebugLog = false;
 CTranslationInterface translationInterface;
 
 /** Init OpenSSL library multithreading support */
@@ -245,13 +232,12 @@ void OpenDebugLog()
     assert(vMsgsBeforeOpenLog);
     boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
     fileout = fopen(pathDebug.string().c_str(), "a");
-    if (fileout) {
-        setbuf(fileout, NULL); // unbuffered
-        // dump buffered messages from before we opened the log
-        while (!vMsgsBeforeOpenLog->empty()) {
-            FileWriteStr(vMsgsBeforeOpenLog->front(), fileout);
-            vMsgsBeforeOpenLog->pop_front();
-        }
+    if (fileout) setbuf(fileout, NULL); // unbuffered
+
+    // dump buffered messages from before we opened the log
+    while (!vMsgsBeforeOpenLog->empty()) {
+        FileWriteStr(vMsgsBeforeOpenLog->front(), fileout);
+        vMsgsBeforeOpenLog->pop_front();
     }
 
     delete vMsgsBeforeOpenLog;
@@ -262,32 +248,39 @@ bool LogAcceptCategory(const char* category)
 {
     if (category != NULL)
     {
-        if (!fDebug)
-            return false;
-
         // Give each thread quick access to -debug settings.
         // This helps prevent issues debugging global destructors,
         // where mapMultiArgs might be deleted before another
         // global destructor calls LogPrint()
         static boost::thread_specific_ptr<set<string> > ptrCategory;
+
+        if (!fDebug) {
+            if (ptrCategory.get() != NULL) {
+                LogPrintf("debug turned off: thread %s\n", GetThreadName());
+                ptrCategory.release();
+            }
+            return false;
+        }
+
         if (ptrCategory.get() == NULL)
         {
-            if (mapMultiArgs.count("-debug")) {
-                const vector<string>& categories = mapMultiArgs.at("-debug");
-                ptrCategory.reset(new set<string>(categories.begin(), categories.end()));
-                // thread_specific_ptr automatically deletes the set when the thread ends.
-				/**TODO-- */
-				// "kreds" is a composite category enabling all Kreds-related debug output
-				if(ptrCategory->count(string("kreds"))) {
-					ptrCategory->insert(string("darksend"));
-					ptrCategory->insert(string("instantx"));
-					ptrCategory->insert(string("masternode"));
-					ptrCategory->insert(string("keepass"));
-					ptrCategory->insert(string("mnpayments"));
-					//ptrCategory->insert(string("mnbudget"));//TODO-- ends
-				}
-            } else
-                ptrCategory.reset(new set<string>());
+            std::string strThreadName = GetThreadName();
+            LogPrintf("debug turned on:\n");
+            for (int i = 0; i < (int)mapMultiArgs["-debug"].size(); ++i)
+                LogPrintf("  thread %s category %s\n", strThreadName, mapMultiArgs["-debug"][i]);
+            const vector<string>& categories = mapMultiArgs["-debug"];
+            ptrCategory.reset(new set<string>(categories.begin(), categories.end()));
+            // thread_specific_ptr automatically deletes the set when the thread ends.
+            // "hth" is a composite category enabling all HTH-related debug output
+            if(ptrCategory->count(string("hth"))) {
+                ptrCategory->insert(string("privatesend"));
+                ptrCategory->insert(string("instantsend"));
+                ptrCategory->insert(string("masternode"));
+                ptrCategory->insert(string("spork"));
+                ptrCategory->insert(string("keepass"));
+                ptrCategory->insert(string("mnpayments"));
+                ptrCategory->insert(string("gobject"));
+            }
         }
         const set<string>& setCategories = *ptrCategory.get();
 
@@ -303,9 +296,9 @@ bool LogAcceptCategory(const char* category)
 /**
  * fStartedNewLine is a state variable held by the calling context that will
  * suppress printing of the timestamp when multiple calls are made that don't
- * end in a newline. Initialize it to true, and hold it, in the calling context.
+ * end in a newline. Initialize it to true, and hold/manage it, in the calling context.
  */
-static std::string LogTimestampStr(const std::string &str, std::atomic_bool *fStartedNewLine)
+static std::string LogTimestampStr(const std::string &str, bool *fStartedNewLine)
 {
     string strStamped;
 
@@ -321,20 +314,43 @@ static std::string LogTimestampStr(const std::string &str, std::atomic_bool *fSt
     } else
         strStamped = str;
 
-    if (!str.empty() && str[str.size()-1] == '\n')
-        *fStartedNewLine = true;
-    else
-        *fStartedNewLine = false;
-
     return strStamped;
+}
+
+/**
+ * fStartedNewLine is a state variable held by the calling context that will
+ * suppress printing of the thread name when multiple calls are made that don't
+ * end in a newline. Initialize it to true, and hold/manage it, in the calling context.
+ */
+static std::string LogThreadNameStr(const std::string &str, bool *fStartedNewLine)
+{
+    string strThreadLogged;
+
+    if (!fLogThreadNames)
+        return str;
+
+    std::string strThreadName = GetThreadName();
+
+    if (*fStartedNewLine)
+        strThreadLogged = strprintf("%16s | %s", strThreadName.c_str(), str.c_str());
+    else
+        strThreadLogged = str;
+
+    return strThreadLogged;
 }
 
 int LogPrintStr(const std::string &str)
 {
     int ret = 0; // Returns total number of characters written
-    static std::atomic_bool fStartedNewLine(true);
+    static bool fStartedNewLine = true;
 
-    string strTimestamped = LogTimestampStr(str, &fStartedNewLine);
+    std::string strThreadLogged = LogThreadNameStr(str, &fStartedNewLine);
+    std::string strTimestamped = LogTimestampStr(strThreadLogged, &fStartedNewLine);
+
+    if (!str.empty() && str[str.size()-1] == '\n')
+        fStartedNewLine = true;
+    else
+        fStartedNewLine = false;
 
     if (fPrintToConsole)
     {
@@ -389,9 +405,8 @@ static void InterpretNegativeSetting(std::string& strKey, std::string& strValue)
 
 void ParseParameters(int argc, const char* const argv[])
 {
-    LOCK(cs_args);
     mapArgs.clear();
-    _mapMultiArgs.clear();
+    mapMultiArgs.clear();
 
     for (int i = 1; i < argc; i++)
     {
@@ -419,19 +434,12 @@ void ParseParameters(int argc, const char* const argv[])
         InterpretNegativeSetting(str, strValue);
 
         mapArgs[str] = strValue;
-        _mapMultiArgs[str].push_back(strValue);
+        mapMultiArgs[str].push_back(strValue);
     }
-}
-
-bool IsArgSet(const std::string& strArg)
-{
-    LOCK(cs_args);
-    return mapArgs.count(strArg);
 }
 
 std::string GetArg(const std::string& strArg, const std::string& strDefault)
 {
-    LOCK(cs_args);
     if (mapArgs.count(strArg))
         return mapArgs[strArg];
     return strDefault;
@@ -439,7 +447,6 @@ std::string GetArg(const std::string& strArg, const std::string& strDefault)
 
 int64_t GetArg(const std::string& strArg, int64_t nDefault)
 {
-    LOCK(cs_args);
     if (mapArgs.count(strArg))
         return atoi64(mapArgs[strArg]);
     return nDefault;
@@ -447,7 +454,6 @@ int64_t GetArg(const std::string& strArg, int64_t nDefault)
 
 bool GetBoolArg(const std::string& strArg, bool fDefault)
 {
-    LOCK(cs_args);
     if (mapArgs.count(strArg))
         return InterpretBool(mapArgs[strArg]);
     return fDefault;
@@ -455,7 +461,6 @@ bool GetBoolArg(const std::string& strArg, bool fDefault)
 
 bool SoftSetArg(const std::string& strArg, const std::string& strValue)
 {
-    LOCK(cs_args);
     if (mapArgs.count(strArg))
         return false;
     mapArgs[strArg] = strValue;
@@ -469,14 +474,6 @@ bool SoftSetBoolArg(const std::string& strArg, bool fValue)
     else
         return SoftSetArg(strArg, std::string("0"));
 }
-
-void ForceSetArg(const std::string& strArg, const std::string& strValue)
-{
-    LOCK(cs_args);
-    mapArgs[strArg] = strValue;
-}
-
-
 
 static const int screenWidth = 79;
 static const int optIndent = 2;
@@ -499,7 +496,7 @@ static std::string FormatException(const std::exception* pex, const char* pszThr
     char pszModule[MAX_PATH] = "";
     GetModuleFileNameA(NULL, pszModule, sizeof(pszModule));
 #else
-    const char* pszModule = "kreds";
+    const char* pszModule = "hth";
 #endif
     if (pex)
         return strprintf(
@@ -519,13 +516,13 @@ void PrintExceptionContinue(const std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
-    // Windows < Vista: C:\Documents and Settings\Username\Application Data\kreds
-    // Windows >= Vista: C:\Users\Username\AppData\Roaming\kreds
-    // Mac: ~/Library/Application Support/kreds
-    // Unix: ~/.kreds
+    // Windows < Vista: C:\Documents and Settings\Username\Application Data\HTHCore
+    // Windows >= Vista: C:\Users\Username\AppData\Roaming\HTHCore
+    // Mac: ~/Library/Application Support/HTHCore
+    // Unix: ~/.hthcore
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "kreds";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "HTHCore";
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -535,10 +532,10 @@ boost::filesystem::path GetDefaultDataDir()
         pathRet = fs::path(pszHome);
 #ifdef MAC_OSX
     // Mac
-    return pathRet / "Library/Application Support/kreds";
+    return pathRet / "Library/Application Support/HTHCore";
 #else
     // Unix
-    return pathRet / ".kreds";
+    return pathRet / ".hthcore";
 #endif
 #endif
 }
@@ -560,8 +557,8 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     if (!path.empty())
         return path;
 
-    if (IsArgSet("-datadir")) {
-        path = fs::system_complete(GetArg("-datadir", ""));
+    if (mapArgs.count("-datadir")) {
+        path = fs::system_complete(mapArgs["-datadir"]);
         if (!fs::is_directory(path)) {
             path = "";
             return path;
@@ -577,69 +574,114 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     return path;
 }
 
+static boost::filesystem::path backupsDirCached;
+static CCriticalSection csBackupsDirCached;
+
+const boost::filesystem::path &GetBackupsDir()
+{
+    namespace fs = boost::filesystem;
+
+    LOCK(csBackupsDirCached);
+
+    fs::path &backupsDir = backupsDirCached;
+
+    if (!backupsDir.empty())
+        return backupsDir;
+
+    if (mapArgs.count("-walletbackupsdir")) {
+        backupsDir = fs::absolute(mapArgs["-walletbackupsdir"]);
+        // Path must exist
+        if (fs::is_directory(backupsDir)) return backupsDir;
+        // Fallback to default path if it doesn't
+        LogPrintf("%s: Warning: incorrect parameter -walletbackupsdir, path must exist! Using default path.\n", __func__);
+        strMiscWarning = _("Warning: incorrect parameter -walletbackupsdir, path must exist! Using default path.");
+    }
+    // Default path
+    backupsDir = GetDataDir() / "backups";
+
+    return backupsDir;
+}
+
 void ClearDatadirCache()
 {
-    LOCK(csPathCached);
-
     pathCached = boost::filesystem::path();
     pathCachedNetSpecific = boost::filesystem::path();
 }
 
-boost::filesystem::path GetConfigFile(const std::string& confPath)
+boost::filesystem::path GetConfigFile()
 {
-    boost::filesystem::path pathConfigFile(confPath);
+    boost::filesystem::path pathConfigFile(GetArg("-conf", BITCOIN_CONF_FILENAME));
     if (!pathConfigFile.is_complete())
         pathConfigFile = GetDataDir(false) / pathConfigFile;
 
     return pathConfigFile;
 }
-/**TODO-- improve code*/
-boost::filesystem::path GetMasternodeConfigFile(/*const std::string& confPath*/)
+
+boost::filesystem::path GetMasternodeConfigFile()
 {
     boost::filesystem::path pathConfigFile(GetArg("-mnconf", "masternode.conf"));
-    if (!pathConfigFile.is_complete())
-		pathConfigFile = GetDataDir() / pathConfigFile;
+    if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir() / pathConfigFile;
     return pathConfigFile;
 }
 
-
-void ReadConfigFile(const std::string& confPath)
+void ReadConfigFile(map<string, string>& mapSettingsRet,
+                    map<string, vector<string> >& mapMultiSettingsRet)
 {
-    boost::filesystem::ifstream streamConfig(GetConfigFile(confPath));
+    boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good()){
-		/**TODO-- */
-        // Create empty kreds.conf if it does not excist
-        //FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
-        //if (configFile != NULL)
-            //fclose(configFile);
-        return; // Nothing to read, so just return //return; // No kreds.conf file is OK
-    }
-        
-
-    {
-        LOCK(cs_args);
-        set<string> setOptions;
-        setOptions.insert("*");
-
-        for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it)
-        {
-            // Don't overwrite existing settings so command line settings override kreds.conf
-            string strKey = string("-") + it->string_key;
-            string strValue = it->value[0];
-            InterpretNegativeSetting(strKey, strValue);
-            if (mapArgs.count(strKey) == 0)
-                mapArgs[strKey] = strValue;
-            _mapMultiArgs[strKey].push_back(strValue);
+        // Create empty hth.conf if it does not excist
+        FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
+        if (configFile != NULL) {
+        	AddSeedsToConfigFile(configFile);
+        	fclose(configFile);
+        	ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
+        } else {
+        	LogPrintf("hth.conf file not found or can't be created\n");
+        	return; // Nothing to read, so just return
         }
+    }
+
+    set<string> setOptions;
+    setOptions.insert("*");
+
+    for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it)
+    {
+        // Don't overwrite existing settings so command line settings override hth.conf
+        string strKey = string("-") + it->string_key;
+        string strValue = it->value[0];
+        InterpretNegativeSetting(strKey, strValue);
+        if (mapSettingsRet.count(strKey) == 0)
+            mapSettingsRet[strKey] = strValue;
+        mapMultiSettingsRet[strKey].push_back(strValue);
     }
     // If datadir is changed in .conf file:
     ClearDatadirCache();
 }
 
+void AddSeedsToConfigFile(FILE* configFile) {
+	fprintf(configFile,"onlynet=ipv4\r\n");
+	//fprintf(configFile,"addnode=144.202.109.173:13058\r\n");
+	//fprintf(configFile,"addnode=140.143.129.82:13058\r\n");
+//	fprintf(configFile,"addnode=113.243.73.116:13058\r\n");
+//	fprintf(configFile,"addnode=45.32.226.148:13058\r\n");
+//	fprintf(configFile,"addnode=141.101.14.64:13058\r\n");
+//	fprintf(configFile,"addnode=84.55.19.210:13058\r\n");
+//	fprintf(configFile,"addnode=108.61.142.63:13058\r\n");
+//	fprintf(configFile,"addnode=8.12.22.78:13058\r\n");
+//	fprintf(configFile,"addnode=108.160.138.215:13058\r\n");
+//	fprintf(configFile,"addnode=167.99.206.101\r\n");
+////	fprintf(configFile,"addnode=159.65.152.125\r\n");
+	fprintf(configFile,"addnode=167.99.217.206\r\n");
+	fprintf(configFile,"addnode=167.99.190.68\r\n");
+	fprintf(configFile,"addnode=138.68.1.181\r\n");
+	fprintf(configFile,"addnode=138.68.156.199\r\n");
+	fprintf(configFile,"addnode=206.189.98.150\r\n");
+}
+
 #ifndef WIN32
 boost::filesystem::path GetPidFile()
 {
-    boost::filesystem::path pathPidFile(GetArg("-pid", KREDS_PID_FILENAME));
+    boost::filesystem::path pathPidFile(GetArg("-pid", BITCOIN_PID_FILENAME));
     if (!pathPidFile.is_complete()) pathPidFile = GetDataDir() / pathPidFile;
     return pathPidFile;
 }
@@ -685,19 +727,19 @@ bool TryCreateDirectory(const boost::filesystem::path& p)
     return false;
 }
 
-void FileCommit(FILE *file)
+void FileCommit(FILE *fileout)
 {
-    fflush(file); // harmless if redundantly called
+    fflush(fileout); // harmless if redundantly called
 #ifdef WIN32
-    HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(file));
+    HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(fileout));
     FlushFileBuffers(hFile);
 #else
     #if defined(__linux__) || defined(__NetBSD__)
-    fdatasync(fileno(file));
+    fdatasync(fileno(fileout));
     #elif defined(__APPLE__) && defined(F_FULLFSYNC)
-    fcntl(fileno(file), F_FULLFSYNC, 0);
+    fcntl(fileno(fileout), F_FULLFSYNC, 0);
     #else
-    fsync(fileno(file));
+    fsync(fileno(fileout));
     #endif
 #endif
 }
@@ -781,25 +823,21 @@ void AllocateFileRange(FILE *file, unsigned int offset, unsigned int length) {
 
 void ShrinkDebugFile()
 {
-    // Amount of debug.log to save at end when shrinking (must fit in memory)
-    constexpr size_t RECENT_DEBUG_HISTORY_SIZE = 10 * 1000000;
     // Scroll debug.log if it's getting too big
     boost::filesystem::path pathLog = GetDataDir() / "debug.log";
     FILE* file = fopen(pathLog.string().c_str(), "r");
-    // If debug.log file is more than 10% bigger the RECENT_DEBUG_HISTORY_SIZE
-    // trim it down by saving only the last RECENT_DEBUG_HISTORY_SIZE bytes
-    if (file && boost::filesystem::file_size(pathLog) > 11 * (RECENT_DEBUG_HISTORY_SIZE / 10))
+    if (file && boost::filesystem::file_size(pathLog) > 10 * 1000000)
     {
         // Restart the file with some of the end
-        std::vector<char> vch(RECENT_DEBUG_HISTORY_SIZE, 0);
+        std::vector <char> vch(200000,0);
         fseek(file, -((long)vch.size()), SEEK_END);
-        int nBytes = fread(vch.data(), 1, vch.size(), file);
+        int nBytes = fread(begin_ptr(vch), 1, vch.size(), file);
         fclose(file);
 
         file = fopen(pathLog.string().c_str(), "w");
         if (file)
         {
-            fwrite(vch.data(), 1, nBytes, file);
+            fwrite(begin_ptr(vch), 1, nBytes, file);
             fclose(file);
         }
     }
@@ -824,6 +862,28 @@ boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate)
 }
 #endif
 
+boost::filesystem::path GetTempPath() {
+#if BOOST_FILESYSTEM_VERSION == 3
+    return boost::filesystem::temp_directory_path();
+#else
+    // TODO: remove when we don't support filesystem v2 anymore
+    boost::filesystem::path path;
+#ifdef WIN32
+    char pszPath[MAX_PATH] = "";
+
+    if (GetTempPathA(MAX_PATH, pszPath))
+        path = boost::filesystem::path(pszPath);
+#else
+    path = boost::filesystem::path("/tmp");
+#endif
+    if (path.empty() || !boost::filesystem::is_directory(path)) {
+        LogPrintf("GetTempPath(): failed to find temp path\n");
+        return boost::filesystem::path("");
+    }
+    return path;
+#endif
+}
+
 void runCommand(const std::string& strCommand)
 {
     int nErr = ::system(strCommand.c_str());
@@ -847,18 +907,23 @@ void RenameThread(const char* name)
 #endif
 }
 
+std::string GetThreadName()
+{
+    char name[16];
+#if defined(PR_GET_NAME)
+    // Only the first 15 characters are used (16 - NUL terminator)
+    ::prctl(PR_GET_NAME, name, 0, 0, 0);
+#elif defined(MAC_OSX)
+    pthread_getname_np(pthread_self(), name, 16);
+// #elif (defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
+// #else
+    // no get_name here
+#endif
+    return std::string(name);
+}
+
 void SetupEnvironment()
 {
-#ifdef HAVE_MALLOPT_ARENA_MAX
-    // glibc-specific: On 32-bit systems set the number of arenas to 1.
-    // By default, since glibc 2.10, the C library will create up to two heap
-    // arenas per core. This is known to cause excessive virtual address space
-    // usage in our usage. Work around it by setting the maximum number of
-    // arenas to 1.
-    if (sizeof(void*) == 4) {
-        mallopt(M_ARENA_MAX, 1);
-    }
-#endif
     // On most POSIX systems (e.g. Linux, but not BSD) the environment's locale
     // may be invalid, in which case the "C" locale is used as fallback.
 #if !defined(WIN32) && !defined(MAC_OSX) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
@@ -888,6 +953,19 @@ bool SetupNetworking()
     return true;
 }
 
+void SetThreadPriority(int nPriority)
+{
+#ifdef WIN32
+    SetThreadPriority(GetCurrentThread(), nPriority);
+#else // WIN32
+#ifdef PRIO_THREAD
+    setpriority(PRIO_THREAD, 0, nPriority);
+#else // PRIO_THREAD
+    setpriority(PRIO_PROCESS, 0, nPriority);
+#endif // PRIO_THREAD
+#endif // WIN32
+}
+
 int GetNumCores()
 {
 #if BOOST_VERSION >= 105600
@@ -895,15 +973,4 @@ int GetNumCores()
 #else // Must fall back to hardware_concurrency, which unfortunately counts virtual cores
     return boost::thread::hardware_concurrency();
 #endif
-}
-
-std::string CopyrightHolders(const std::string& strPrefix)
-{
-    std::string strCopyrightHolders = strPrefix + strprintf(_(COPYRIGHT_HOLDERS), _(COPYRIGHT_HOLDERS_SUBSTITUTION));
-
-    // Check for untranslated substitution to make sure Kreds copyright is not removed by accident
-    if (strprintf(COPYRIGHT_HOLDERS, COPYRIGHT_HOLDERS_SUBSTITUTION).find("Kreds") == std::string::npos) {
-        strCopyrightHolders += "\n" + strPrefix + "The Bitcoin Core developers";
-    }
-    return strCopyrightHolders;
 }
