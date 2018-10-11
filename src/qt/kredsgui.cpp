@@ -1,18 +1,16 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#if defined(HAVE_CONFIG_H)
-#include "config/kreds-config.h"
-#endif
+#include "bitcoingui.h"
 
-#include "kredsgui.h"
-#include "masternodelist.h"
-#include "kredsunits.h"
+#include "bitcoinunits.h"
 #include "clientmodel.h"
 #include "guiconstants.h"
 #include "guiutil.h"
-#include "modaloverlay.h"
 #include "networkstyle.h"
 #include "notificator.h"
 #include "openuridialog.h"
@@ -21,8 +19,6 @@
 #include "platformstyle.h"
 #include "rpcconsole.h"
 #include "utilitydialog.h"
-
-#include "activemasternode.h"
 
 #ifdef ENABLE_WALLET
 #include "walletframe.h"
@@ -33,10 +29,11 @@
 #include "macdockiconhandler.h"
 #endif
 
-#include "chainparams.h"
 #include "init.h"
 #include "ui_interface.h"
 #include "util.h"
+#include "masternode-sync.h"
+#include "masternodelist.h"
 
 #include <iostream>
 
@@ -49,6 +46,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QProgressBar>
 #include <QProgressDialog>
 #include <QSettings>
 #include <QShortcut>
@@ -66,7 +64,7 @@
 #include <QUrlQuery>
 #endif
 
-const std::string KredsGUI::DEFAULT_UIPLATFORM =
+const std::string BitcoinGUI::DEFAULT_UIPLATFORM =
 #if defined(Q_OS_MAC)
         "macosx"
 #elif defined(Q_OS_WIN)
@@ -76,19 +74,15 @@ const std::string KredsGUI::DEFAULT_UIPLATFORM =
 #endif
         ;
 
-/** Display name for default wallet name. Uses tilde to avoid name
- * collisions in the future with additional wallets */
-const QString KredsGUI::DEFAULT_WALLET = "~Default";
+const QString BitcoinGUI::DEFAULT_WALLET = "~Default";
 
-KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *networkStyle, QWidget *parent) :
+BitcoinGUI::BitcoinGUI(const PlatformStyle *platformStyle, const NetworkStyle *networkStyle, QWidget *parent) :
     QMainWindow(parent),
-    enableWallet(false),
     clientModel(0),
     walletFrame(0),
     unitDisplayControl(0),
-    labelWalletEncryptionIcon(0),
-    labelWalletHDStatusIcon(0),
-    connectionsControl(0),
+    labelEncryptionIcon(0),
+    labelConnectionsIcon(0),
     labelBlocksIcon(0),
     progressBarLabel(0),
     progressBar(0),
@@ -96,7 +90,7 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     appMenuBar(0),
     overviewAction(0),
     historyAction(0),
-	masternodeAction(0),
+    masternodeAction(0),
     quitAction(0),
     sendCoinsAction(0),
     sendCoinsMenuAction(0),
@@ -105,7 +99,6 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     signMessageAction(0),
     verifyMessageAction(0),
     aboutAction(0),
-	//bip38ToolAction(0),
     receiveCoinsAction(0),
     receiveCoinsMenuAction(0),
     optionsAction(0),
@@ -113,29 +106,32 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     encryptWalletAction(0),
     backupWalletAction(0),
     changePassphraseAction(0),
-    unlockWalletAction(0),
     aboutQtAction(0),
     openRPCConsoleAction(0),
     openAction(0),
     showHelpMessageAction(0),
+    showPrivateSendHelpAction(0),
     trayIcon(0),
     trayIconMenu(0),
+    dockIconMenu(0),
     notificator(0),
     rpcConsole(0),
     helpMessageDialog(0),
-    modalOverlay(0),
     prevBlocks(0),
     spinnerFrame(0),
-    platformStyle(_platformStyle)
+    platformStyle(platformStyle)
 {
-	
-	/* Open CSS when configured */
+    /* Open CSS when configured */
     this->setStyleSheet(GUIUtil::loadStyleSheet());
-    GUIUtil::restoreWindowGeometry("nWindow", QSize(850, 600), this);
 
-    QString windowTitle = tr(PACKAGE_NAME) + " - ";
+    GUIUtil::restoreWindowGeometry("nWindow", QSize(850, 550), this);
+
+    QString windowTitle = tr("HTH Core") + " - ";
 #ifdef ENABLE_WALLET
-    enableWallet = WalletModel::isWalletEnabled();
+    /* if compiled with wallet support, -disablewallet can still disable the wallet */
+    enableWallet = !GetBoolArg("-disablewallet", false);
+#else
+    enableWallet = false;
 #endif // ENABLE_WALLET
     if(enableWallet)
     {
@@ -143,6 +139,8 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     } else {
         windowTitle += tr("Node");
     }
+    QString userWindowTitle = QString::fromStdString(GetArg("-windowtitle", ""));
+    if(!userWindowTitle.isEmpty()) windowTitle += " - " + userWindowTitle;
     windowTitle += " " + networkStyle->getTitleAddText();
 #ifndef Q_OS_MAC
     QApplication::setWindowIcon(networkStyle->getTrayAndWindowIcon());
@@ -158,14 +156,13 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     setUnifiedTitleAndToolBarOnMac(true);
 #endif
 
-    rpcConsole = new RPCConsole(_platformStyle, 0);
-    helpMessageDialog = new HelpMessageDialog(this, false);
+    rpcConsole = new RPCConsole(platformStyle, 0);
+    helpMessageDialog = new HelpMessageDialog(this, HelpMessageDialog::cmdline);
 #ifdef ENABLE_WALLET
     if(enableWallet)
     {
-        /** Create wallet frame and make it the central widget */
-        walletFrame = new WalletFrame(_platformStyle, this);
-        setCentralWidget(walletFrame);
+        /** Create wallet frame*/
+        walletFrame = new WalletFrame(platformStyle, this);
     } else
 #endif // ENABLE_WALLET
     {
@@ -205,30 +202,34 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     frameBlocksLayout->setContentsMargins(3,0,3,0);
     frameBlocksLayout->setSpacing(3);
     unitDisplayControl = new UnitDisplayStatusBarControl(platformStyle);
-    labelWalletEncryptionIcon = new QLabel();
-    labelWalletHDStatusIcon = new QLabel();
-    connectionsControl = new GUIUtil::ClickableLabel();
-    labelBlocksIcon = new GUIUtil::ClickableLabel();
+    labelEncryptionIcon = new QLabel();
+    labelConnectionsIcon = new QPushButton();
+    labelConnectionsIcon->setFlat(true); // Make the button look like a label, but clickable
+    labelConnectionsIcon->setStyleSheet(".QPushButton { background-color: rgba(255, 255, 255, 0);}");
+    labelConnectionsIcon->setMaximumSize(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE);
+    // Jump to peers tab by clicking on connections icon
+    connect(labelConnectionsIcon, SIGNAL(clicked()), this, SLOT(showPeers()));
+
+    labelBlocksIcon = new QLabel();
     if(enableWallet)
     {
         frameBlocksLayout->addStretch();
         frameBlocksLayout->addWidget(unitDisplayControl);
         frameBlocksLayout->addStretch();
-        frameBlocksLayout->addWidget(labelWalletEncryptionIcon);
-        frameBlocksLayout->addWidget(labelWalletHDStatusIcon);
+        frameBlocksLayout->addWidget(labelEncryptionIcon);
     }
     frameBlocksLayout->addStretch();
-    frameBlocksLayout->addWidget(connectionsControl);
+    frameBlocksLayout->addWidget(labelConnectionsIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelBlocksIcon);
     frameBlocksLayout->addStretch();
 
     // Progress bar and label for blocks download
     progressBarLabel = new QLabel();
-    progressBarLabel->setVisible(false);
+    progressBarLabel->setVisible(true);
     progressBar = new GUIUtil::ProgressBar();
     progressBar->setAlignment(Qt::AlignCenter);
-    progressBar->setVisible(false);
+    progressBar->setVisible(true);
 
     // Override style sheet for progress bar for styles that have a segmented progress bar,
     // as they make the text unreadable (workaround for issue #1071)
@@ -236,25 +237,13 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
     QString curStyle = QApplication::style()->metaObject()->className();
     if(curStyle == "QWindowsStyle" || curStyle == "QWindowsXPStyle")
     {
-        progressBar->setStyleSheet("QProgressBar { background-color: #e8e8e8; border: 1px solid grey; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
+        progressBar->setStyleSheet("QProgressBar { background-color: #F8F8F8; border: 1px solid grey; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #00CCFF, stop: 1 #33CCFF); border-radius: 7px; margin: 0px; }");
     }
 
     statusBar()->addWidget(progressBarLabel);
     statusBar()->addWidget(progressBar);
     statusBar()->addPermanentWidget(frameBlocks);
-	
-    // Get restart command-line parameters and handle restart
-    connect(rpcConsole, SIGNAL(handleRestart(QStringList)), this, SLOT(handleRestart(QStringList)));
-	
-	connect(openRepairAction, SIGNAL(triggered()), rpcConsole, SLOT(showRepair()));
-	
-	connect(showBackupsAction, SIGNAL(triggered()), rpcConsole, SLOT(showBackups()));
-	
-	connect(showConfAction, SIGNAL(triggered()), rpcConsole, SLOT(showConf()));
-	
-	//AAAA
-	connect(showKredsConfAction, SIGNAL(triggered()), rpcConsole, SLOT(showKredsConf()));
-	
+
     // Install event filter to be able to catch status tip events (QEvent::StatusTip)
     this->installEventFilter(this);
 
@@ -263,21 +252,9 @@ KredsGUI::KredsGUI(const PlatformStyle *_platformStyle, const NetworkStyle *netw
 
     // Subscribe to notifications from core
     subscribeToCoreSignals();
-
-    connect(connectionsControl, SIGNAL(clicked(QPoint)), this, SLOT(toggleNetworkActive()));
-
-
-    modalOverlay = new ModalOverlay(this->centralWidget());
-#ifdef ENABLE_WALLET
-    if(enableWallet) {
-        connect(walletFrame, SIGNAL(requestedSyncWarningInfo()), this, SLOT(showModalOverlay()));
-        connect(labelBlocksIcon, SIGNAL(clicked(QPoint)), this, SLOT(showModalOverlay()));
-        connect(progressBar, SIGNAL(clicked(QPoint)), this, SLOT(showModalOverlay()));
-    }
-#endif
 }
 
-KredsGUI::~KredsGUI()
+BitcoinGUI::~BitcoinGUI()
 {
     // Unsubscribe from notifications from core
     unsubscribeFromCoreSignals();
@@ -293,56 +270,80 @@ KredsGUI::~KredsGUI()
     delete rpcConsole;
 }
 
-void KredsGUI::createActions()
+void BitcoinGUI::createActions()
 {
     QActionGroup *tabGroup = new QActionGroup(this);
 
-    overviewAction = new QAction(platformStyle->SingleColorIcon(":/icons/overview"), tr("&Overview"), this);
+    QString theme = GUIUtil::getThemeName();
+    overviewAction = new QAction(QIcon(":/icons/" + theme + "/overview"), tr("&Overview"), this);
     overviewAction->setStatusTip(tr("Show general overview of wallet"));
     overviewAction->setToolTip(overviewAction->statusTip());
     overviewAction->setCheckable(true);
+#ifdef Q_OS_MAC
+    overviewAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_1));
+#else
     overviewAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_1));
+#endif
     tabGroup->addAction(overviewAction);
 
-    sendCoinsAction = new QAction(platformStyle->SingleColorIcon(":/icons/send"), tr("&Send"), this);
-    sendCoinsAction->setStatusTip(tr("Send coins to a Kreds address"));
+    sendCoinsAction = new QAction(QIcon(":/icons/" + theme + "/send"), tr("&Send"), this);
+    sendCoinsAction->setStatusTip(tr("Send coins to a HTH address"));
     sendCoinsAction->setToolTip(sendCoinsAction->statusTip());
     sendCoinsAction->setCheckable(true);
+#ifdef Q_OS_MAC
+    sendCoinsAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_2));
+#else
     sendCoinsAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_2));
+#endif
     tabGroup->addAction(sendCoinsAction);
 
-    sendCoinsMenuAction = new QAction(platformStyle->TextColorIcon(":/icons/send"), sendCoinsAction->text(), this);
+    sendCoinsMenuAction = new QAction(QIcon(":/icons/" + theme + "/send"), sendCoinsAction->text(), this);
     sendCoinsMenuAction->setStatusTip(sendCoinsAction->statusTip());
     sendCoinsMenuAction->setToolTip(sendCoinsMenuAction->statusTip());
 
-    receiveCoinsAction = new QAction(platformStyle->SingleColorIcon(":/icons/receiving_addresses"), tr("&Receive"), this);
-    receiveCoinsAction->setStatusTip(tr("Request payments (generates QR codes and kreds: URIs)"));
+    receiveCoinsAction = new QAction(QIcon(":/icons/" + theme + "/receiving_addresses"), tr("&Receive"), this);
+    receiveCoinsAction->setStatusTip(tr("Request payments (generates QR codes and hth: URIs)"));
     receiveCoinsAction->setToolTip(receiveCoinsAction->statusTip());
     receiveCoinsAction->setCheckable(true);
+#ifdef Q_OS_MAC
+    receiveCoinsAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_3));
+#else
     receiveCoinsAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_3));
+#endif
     tabGroup->addAction(receiveCoinsAction);
 
-    receiveCoinsMenuAction = new QAction(platformStyle->TextColorIcon(":/icons/receiving_addresses"), receiveCoinsAction->text(), this);
+    receiveCoinsMenuAction = new QAction(QIcon(":/icons/" + theme + "/receiving_addresses"), receiveCoinsAction->text(), this);
     receiveCoinsMenuAction->setStatusTip(receiveCoinsAction->statusTip());
     receiveCoinsMenuAction->setToolTip(receiveCoinsMenuAction->statusTip());
 
-    historyAction = new QAction(platformStyle->SingleColorIcon(":/icons/history"), tr("&Transactions"), this);
+    historyAction = new QAction(QIcon(":/icons/" + theme + "/history"), tr("&Transactions"), this);
     historyAction->setStatusTip(tr("Browse transaction history"));
     historyAction->setToolTip(historyAction->statusTip());
     historyAction->setCheckable(true);
+#ifdef Q_OS_MAC
+    historyAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_4));
+#else
     historyAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_4));
+#endif
     tabGroup->addAction(historyAction);
-	
-		
-	masternodeAction = new QAction(platformStyle->SingleColorIcon(":/icons/masternodes"), tr("&Masternodes"), this);
-    masternodeAction->setStatusTip(tr("Show information about Masternodes"));
-    masternodeAction->setToolTip(masternodeAction->statusTip());
-    masternodeAction->setCheckable(true);
-    masternodeAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_5));
-    tabGroup->addAction(masternodeAction);
-
 
 #ifdef ENABLE_WALLET
+    QSettings settings;
+    if (settings.value("fShowMasternodesTab").toBool()) {
+        masternodeAction = new QAction(QIcon(":/icons/" + theme + "/masternodes"), tr("&Masternodes"), this);
+        masternodeAction->setStatusTip(tr("Browse masternodes"));
+        masternodeAction->setToolTip(masternodeAction->statusTip());
+        masternodeAction->setCheckable(true);
+#ifdef Q_OS_MAC
+        masternodeAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_5));
+#else
+        masternodeAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_5));
+#endif
+        tabGroup->addAction(masternodeAction);
+        connect(masternodeAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+        connect(masternodeAction, SIGNAL(triggered()), this, SLOT(gotoMasternodePage()));
+    }
+
     // These showNormalIfMinimized are needed because Send Coins and Receive Coins
     // can be triggered from the tray menu, and need to show the GUI to be useful.
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -357,72 +358,79 @@ void KredsGUI::createActions()
     connect(receiveCoinsMenuAction, SIGNAL(triggered()), this, SLOT(gotoReceiveCoinsPage()));
     connect(historyAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(historyAction, SIGNAL(triggered()), this, SLOT(gotoHistoryPage()));
-	connect(masternodeAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(masternodeAction, SIGNAL(triggered()), this, SLOT(gotoMasternodePage()));
 #endif // ENABLE_WALLET
 
-    quitAction = new QAction(platformStyle->TextColorIcon(":/icons/quit"), tr("E&xit"), this);
+    quitAction = new QAction(QIcon(":/icons/" + theme + "/quit"), tr("E&xit"), this);
     quitAction->setStatusTip(tr("Quit application"));
     quitAction->setShortcut(QKeySequence(Qt::CTRL + Qt::Key_Q));
     quitAction->setMenuRole(QAction::QuitRole);
-    aboutAction = new QAction(platformStyle->TextColorIcon(":/icons/about"), tr("&About %1").arg(tr(PACKAGE_NAME)), this);
-    aboutAction->setStatusTip(tr("Show information about %1").arg(tr(PACKAGE_NAME)));
+    aboutAction = new QAction(QIcon(":/icons/" + theme + "/about"), tr("&About HTH Core"), this);
+    aboutAction->setStatusTip(tr("Show information about HTH Core"));
     aboutAction->setMenuRole(QAction::AboutRole);
     aboutAction->setEnabled(false);
-    aboutQtAction = new QAction(platformStyle->TextColorIcon(":/icons/about_qt"), tr("About &Qt"), this);
+    aboutQtAction = new QAction(QIcon(":/icons/" + theme + "/about_qt"), tr("About &Qt"), this);
     aboutQtAction->setStatusTip(tr("Show information about Qt"));
     aboutQtAction->setMenuRole(QAction::AboutQtRole);
-    optionsAction = new QAction(platformStyle->TextColorIcon(":/icons/options"), tr("&Options..."), this);
-    optionsAction->setStatusTip(tr("Modify configuration options for %1").arg(tr(PACKAGE_NAME)));
+    optionsAction = new QAction(QIcon(":/icons/" + theme + "/options"), tr("&Options..."), this);
+    optionsAction->setStatusTip(tr("Modify configuration options for HTH Core"));
     optionsAction->setMenuRole(QAction::PreferencesRole);
     optionsAction->setEnabled(false);
-    toggleHideAction = new QAction(platformStyle->TextColorIcon(":/icons/about"), tr("&Show / Hide"), this);
+    toggleHideAction = new QAction(QIcon(":/icons/" + theme + "/about"), tr("&Show / Hide"), this);
     toggleHideAction->setStatusTip(tr("Show or hide the main Window"));
 
-    encryptWalletAction = new QAction(platformStyle->TextColorIcon(":/icons/lock_closed"), tr("&Encrypt Wallet..."), this);
+    encryptWalletAction = new QAction(QIcon(":/icons/" + theme + "/lock_closed"), tr("&Encrypt Wallet..."), this);
     encryptWalletAction->setStatusTip(tr("Encrypt the private keys that belong to your wallet"));
     encryptWalletAction->setCheckable(true);
-    backupWalletAction = new QAction(platformStyle->TextColorIcon(":/icons/filesave"), tr("&Backup Wallet..."), this);
+    backupWalletAction = new QAction(QIcon(":/icons/" + theme + "/filesave"), tr("&Backup Wallet..."), this);
     backupWalletAction->setStatusTip(tr("Backup wallet to another location"));
-    changePassphraseAction = new QAction(platformStyle->TextColorIcon(":/icons/key"), tr("&Change Passphrase..."), this);
+    changePassphraseAction = new QAction(QIcon(":/icons/" + theme + "/key"), tr("&Change Passphrase..."), this);
     changePassphraseAction->setStatusTip(tr("Change the passphrase used for wallet encryption"));
-    unlockWalletAction = new QAction(platformStyle->TextColorIcon(":/icons/lock_open"), tr("&Unlock Wallet..."), this);
-    unlockWalletAction->setStatusTip(tr("Unlock encrypted wallet for further transactions."));
-    signMessageAction = new QAction(platformStyle->TextColorIcon(":/icons/edit"), tr("Sign &message..."), this);
-    signMessageAction->setStatusTip(tr("Sign messages with your Kreds addresses to prove you own them"));
-    verifyMessageAction = new QAction(platformStyle->TextColorIcon(":/icons/verify"), tr("&Verify message..."), this);
-    verifyMessageAction->setStatusTip(tr("Verify messages to ensure they were signed with specified Kreds addresses"));
-	
-	//bip38ToolAction = new QAction(QIcon(":/icons/verify"), tr("&BIP38 tool"), this);//change image
-    //bip38ToolAction->setToolTip(tr("Encrypt and decrypt private keys using a passphrase"));
-	openRepairAction = new QAction(QIcon(":/icons/verify"), tr("Wallet &Repair"), this);
+    unlockWalletAction = new QAction(tr("&Unlock Wallet..."), this);
+    unlockWalletAction->setToolTip(tr("Unlock wallet"));
+    lockWalletAction = new QAction(tr("&Lock Wallet"), this);
+    signMessageAction = new QAction(QIcon(":/icons/" + theme + "/edit"), tr("Sign &message..."), this);
+    signMessageAction->setStatusTip(tr("Sign messages with your HTH addresses to prove you own them"));
+    verifyMessageAction = new QAction(QIcon(":/icons/" + theme + "/transaction_0"), tr("&Verify message..."), this);
+    verifyMessageAction->setStatusTip(tr("Verify messages to ensure they were signed with specified HTH addresses"));
+
+    openInfoAction = new QAction(QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation), tr("&Information"), this);
+    openInfoAction->setStatusTip(tr("Show diagnostic information"));
+    openRPCConsoleAction = new QAction(QIcon(":/icons/" + theme + "/debugwindow"), tr("&Debug console"), this);
+    openRPCConsoleAction->setStatusTip(tr("Open debugging console"));
+    openGraphAction = new QAction(QIcon(":/icons/" + theme + "/connect_4"), tr("&Network Monitor"), this);
+    openGraphAction->setStatusTip(tr("Show network monitor"));
+    openPeersAction = new QAction(QIcon(":/icons/" + theme + "/connect_4"), tr("&Peers list"), this);
+    openPeersAction->setStatusTip(tr("Show peers info"));
+    openRepairAction = new QAction(QIcon(":/icons/" + theme + "/options"), tr("Wallet &Repair"), this);
     openRepairAction->setStatusTip(tr("Show wallet repair options"));
-	
-	showBackupsAction = new QAction(QIcon(":/icons/filesave"), tr("Show Automatic &Backups"), this);
+    openConfEditorAction = new QAction(QIcon(":/icons/" + theme + "/edit"), tr("Open Wallet &Configuration File"), this);
+    openConfEditorAction->setStatusTip(tr("Open configuration file"));
+    openMNConfEditorAction = new QAction(QIcon(":/icons/" + theme + "/edit"), tr("Open &Masternode Configuration File"), this);
+    openMNConfEditorAction->setStatusTip(tr("Open Masternode configuration file"));    
+    showBackupsAction = new QAction(QIcon(":/icons/" + theme + "/browse"), tr("Show Automatic &Backups"), this);
     showBackupsAction->setStatusTip(tr("Show automatically created wallet backups"));
-	//AAA
-	showKredsConfAction = new QAction(QIcon(":/icons/address-book"), tr("Show Kreds Conf file"), this);
-    showKredsConfAction->setStatusTip(tr("Show kreds configuration file"));
-	
-	showConfAction = new QAction(QIcon(":/icons/address-book"), tr("Show Masternode Conf file"), this);
-    showConfAction->setStatusTip(tr("Show masternode configuration file"));
-
-    openRPCConsoleAction = new QAction(platformStyle->TextColorIcon(":/icons/debugwindow"), tr("&Debug window"), this);
-    openRPCConsoleAction->setStatusTip(tr("Open debugging and diagnostic console"));
-    // initially disable the debug window menu item
+    // initially disable the debug window menu items
+    openInfoAction->setEnabled(false);
     openRPCConsoleAction->setEnabled(false);
+    openGraphAction->setEnabled(false);
+    openPeersAction->setEnabled(false);
+    openRepairAction->setEnabled(false);
 
-    usedSendingAddressesAction = new QAction(platformStyle->TextColorIcon(":/icons/address-book"), tr("&Sending addresses..."), this);
+    usedSendingAddressesAction = new QAction(QIcon(":/icons/" + theme + "/address-book"), tr("&Sending addresses..."), this);
     usedSendingAddressesAction->setStatusTip(tr("Show the list of used sending addresses and labels"));
-    usedReceivingAddressesAction = new QAction(platformStyle->TextColorIcon(":/icons/address-book"), tr("&Receiving addresses..."), this);
+    usedReceivingAddressesAction = new QAction(QIcon(":/icons/" + theme + "/address-book"), tr("&Receiving addresses..."), this);
     usedReceivingAddressesAction->setStatusTip(tr("Show the list of used receiving addresses and labels"));
 
-    openAction = new QAction(platformStyle->TextColorIcon(":/icons/open"), tr("Open &URI..."), this);
-    openAction->setStatusTip(tr("Open a kreds: URI or payment request"));
+    openAction = new QAction(QApplication::style()->standardIcon(QStyle::SP_DirOpenIcon), tr("Open &URI..."), this);
+    openAction->setStatusTip(tr("Open a hth: URI or payment request"));
 
-	showHelpMessageAction = new QAction(platformStyle->TextColorIcon(":/icons/info"), tr("&Command-line options"), this);
+    showHelpMessageAction = new QAction(QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation), tr("&Command-line options"), this);
     showHelpMessageAction->setMenuRole(QAction::NoRole);
-    showHelpMessageAction->setStatusTip(tr("Show the %1 help message to get a list with possible Kreds command-line options").arg(tr(PACKAGE_NAME)));
+    showHelpMessageAction->setStatusTip(tr("Show the HTH Core help message to get a list with possible HTH Core command-line options"));
+
+    showPrivateSendHelpAction = new QAction(QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation), tr("&PrivateSend information"), this);
+    showPrivateSendHelpAction->setMenuRole(QAction::NoRole);
+    showPrivateSendHelpAction->setStatusTip(tr("Show the PrivateSend basic information"));
 
     connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit()));
     connect(aboutAction, SIGNAL(triggered()), this, SLOT(aboutClicked()));
@@ -430,7 +438,23 @@ void KredsGUI::createActions()
     connect(optionsAction, SIGNAL(triggered()), this, SLOT(optionsClicked()));
     connect(toggleHideAction, SIGNAL(triggered()), this, SLOT(toggleHidden()));
     connect(showHelpMessageAction, SIGNAL(triggered()), this, SLOT(showHelpMessageClicked()));
-    connect(openRPCConsoleAction, SIGNAL(triggered()), this, SLOT(showDebugWindow()));
+    connect(showPrivateSendHelpAction, SIGNAL(triggered()), this, SLOT(showPrivateSendHelpClicked()));
+
+    // Jump directly to tabs in RPC-console
+    connect(openInfoAction, SIGNAL(triggered()), this, SLOT(showInfo()));
+    connect(openRPCConsoleAction, SIGNAL(triggered()), this, SLOT(showConsole()));
+    connect(openGraphAction, SIGNAL(triggered()), this, SLOT(showGraph()));
+    connect(openPeersAction, SIGNAL(triggered()), this, SLOT(showPeers()));
+    connect(openRepairAction, SIGNAL(triggered()), this, SLOT(showRepair()));
+
+    // Open configs and backup folder from menu
+    connect(openConfEditorAction, SIGNAL(triggered()), this, SLOT(showConfEditor()));
+    connect(openMNConfEditorAction, SIGNAL(triggered()), this, SLOT(showMNConfEditor()));
+    connect(showBackupsAction, SIGNAL(triggered()), this, SLOT(showBackups()));
+
+    // Get restart command-line parameters and handle restart
+    connect(rpcConsole, SIGNAL(handleRestart(QStringList)), this, SLOT(handleRestart(QStringList)));
+    
     // prevents an open debug window from becoming stuck/unusable on client shutdown
     connect(quitAction, SIGNAL(triggered()), rpcConsole, SLOT(hide()));
 
@@ -441,20 +465,23 @@ void KredsGUI::createActions()
         connect(backupWalletAction, SIGNAL(triggered()), walletFrame, SLOT(backupWallet()));
         connect(changePassphraseAction, SIGNAL(triggered()), walletFrame, SLOT(changePassphrase()));
         connect(unlockWalletAction, SIGNAL(triggered()), walletFrame, SLOT(unlockWallet()));
+        connect(lockWalletAction, SIGNAL(triggered()), walletFrame, SLOT(lockWallet()));
         connect(signMessageAction, SIGNAL(triggered()), this, SLOT(gotoSignMessageTab()));
         connect(verifyMessageAction, SIGNAL(triggered()), this, SLOT(gotoVerifyMessageTab()));
-		//connect(bip38ToolAction, SIGNAL(triggered()), this, SLOT(gotoBip38Tool()));
         connect(usedSendingAddressesAction, SIGNAL(triggered()), walletFrame, SLOT(usedSendingAddresses()));
         connect(usedReceivingAddressesAction, SIGNAL(triggered()), walletFrame, SLOT(usedReceivingAddresses()));
         connect(openAction, SIGNAL(triggered()), this, SLOT(openClicked()));
     }
 #endif // ENABLE_WALLET
 
-    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_C), this, SLOT(showDebugWindowActivateConsole()));
-    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_D), this, SLOT(showDebugWindow()));
+    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_I), this, SLOT(showInfo()));
+    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_C), this, SLOT(showConsole()));
+    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_G), this, SLOT(showGraph()));
+    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_P), this, SLOT(showPeers()));
+    new QShortcut(QKeySequence(Qt::CTRL + Qt::SHIFT + Qt::Key_R), this, SLOT(showRepair()));
 }
 
-void KredsGUI::createMenuBar()
+void BitcoinGUI::createMenuBar()
 {
 #ifdef Q_OS_MAC
     // Create a decoupled menu bar on Mac which stays even if the window is closed
@@ -485,86 +512,117 @@ void KredsGUI::createMenuBar()
         settings->addAction(encryptWalletAction);
         settings->addAction(changePassphraseAction);
         settings->addAction(unlockWalletAction);
-		//settings->addAction(bip38ToolAction);
+        settings->addAction(lockWalletAction);
         settings->addSeparator();
     }
     settings->addAction(optionsAction);
 
-    QMenu *help = appMenuBar->addMenu(tr("&Help"));
     if(walletFrame)
     {
-        help->addAction(openRPCConsoleAction);
-		help->addSeparator();
-		help->addAction(openRepairAction);
-		help->addAction(showBackupsAction);
-		help->addAction(showKredsConfAction);
-		help->addAction(showConfAction);
+        QMenu *tools = appMenuBar->addMenu(tr("&Tools"));
+        tools->addAction(openInfoAction);
+        tools->addAction(openRPCConsoleAction);
+        tools->addAction(openGraphAction);
+        tools->addAction(openPeersAction);
+        tools->addAction(openRepairAction);
+        tools->addSeparator();
+        tools->addAction(openConfEditorAction);
+        tools->addAction(openMNConfEditorAction);
+        tools->addAction(showBackupsAction);
     }
+
+    QMenu *help = appMenuBar->addMenu(tr("&Help"));
     help->addAction(showHelpMessageAction);
+    help->addAction(showPrivateSendHelpAction);
     help->addSeparator();
     help->addAction(aboutAction);
     help->addAction(aboutQtAction);
 }
 
-void KredsGUI::createToolBars()
+void BitcoinGUI::createToolBars()
 {
     if(walletFrame)
     {
-        QToolBar *toolbar = addToolBar(tr("Tabs toolbar"));
-        toolbar->setMovable(false);
+        QToolBar *toolbar = new QToolBar(tr("Tabs toolbar"));
         toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         toolbar->addAction(overviewAction);
         toolbar->addAction(sendCoinsAction);
         toolbar->addAction(receiveCoinsAction);
         toolbar->addAction(historyAction);
-		toolbar->addAction(masternodeAction);
+        QSettings settings;
+        if (settings.value("fShowMasternodesTab").toBool())
+        {
+            toolbar->addAction(masternodeAction);
+        }
+        toolbar->setMovable(false); // remove unused icon in upper left corner
         overviewAction->setChecked(true);
+
+        /** Create additional container for toolbar and walletFrame and make it the central widget.
+            This is a workaround mostly for toolbar styling on Mac OS but should work fine for every other OSes too.
+        */
+        QVBoxLayout *layout = new QVBoxLayout;
+        layout->addWidget(toolbar);
+        layout->addWidget(walletFrame);
+        layout->setSpacing(0);
+        layout->setContentsMargins(QMargins());
+        QWidget *containerWidget = new QWidget();
+        containerWidget->setLayout(layout);
+        setCentralWidget(containerWidget);
     }
 }
 
-void KredsGUI::setClientModel(ClientModel *_clientModel)
+void BitcoinGUI::setClientModel(ClientModel *clientModel)
 {
-    this->clientModel = _clientModel;
-    if(_clientModel)
+    this->clientModel = clientModel;
+    if(clientModel)
     {
         // Create system tray menu (or setup the dock menu) that late to prevent users from calling actions,
         // while the client has not yet fully loaded
-        createTrayIconMenu();
+        if (trayIcon) {
+            // do so only if trayIcon is already set
+            trayIconMenu = new QMenu(this);
+            trayIcon->setContextMenu(trayIconMenu);
+            createIconMenu(trayIconMenu);
+
+#ifndef Q_OS_MAC
+            // Show main window on tray icon click
+            // Note: ignore this on Mac - this is not the way tray should work there
+            connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+                    this, SLOT(trayIconActivated(QSystemTrayIcon::ActivationReason)));
+#else
+            // Note: On Mac, the dock icon is also used to provide menu functionality
+            // similar to one for tray icon
+            MacDockIconHandler *dockIconHandler = MacDockIconHandler::instance();
+            dockIconHandler->setMainWindow((QMainWindow *)this);
+            dockIconMenu = dockIconHandler->dockMenu();
+ 
+            createIconMenu(dockIconMenu);
+#endif
+        }
 
         // Keep up to date with client
-        updateNetworkState();
-        connect(_clientModel, SIGNAL(numConnectionsChanged(int)), this, SLOT(setNumConnections(int)));
-        connect(_clientModel, SIGNAL(networkActiveChanged(bool)), this, SLOT(setNetworkActive(bool)));
+        setNumConnections(clientModel->getNumConnections());
+        connect(clientModel, SIGNAL(numConnectionsChanged(int)), this, SLOT(setNumConnections(int)));
 
-        setNumBlocks(_clientModel->getNumBlocks(), _clientModel->getLastBlockDate(), _clientModel->getVerificationProgress(NULL), false);
-        connect(_clientModel, SIGNAL(numBlocksChanged(int,QDateTime,double,bool)), this, SLOT(setNumBlocks(int,QDateTime,double,bool)));
+        setNumBlocks(clientModel->getNumBlocks(), clientModel->getLastBlockDate(), clientModel->getVerificationProgress(NULL));
+        connect(clientModel, SIGNAL(numBlocksChanged(int,QDateTime,double)), this, SLOT(setNumBlocks(int,QDateTime,double)));
+
+        connect(clientModel, SIGNAL(additionalDataSyncProgressChanged(double)), this, SLOT(setAdditionalDataSyncProgress(double)));
 
         // Receive and report messages from client model
-        connect(_clientModel, SIGNAL(message(QString,QString,unsigned int)), this, SLOT(message(QString,QString,unsigned int)));
+        connect(clientModel, SIGNAL(message(QString,QString,unsigned int)), this, SLOT(message(QString,QString,unsigned int)));
 
         // Show progress dialog
-        connect(_clientModel, SIGNAL(showProgress(QString,int)), this, SLOT(showProgress(QString,int)));
+        connect(clientModel, SIGNAL(showProgress(QString,int)), this, SLOT(showProgress(QString,int)));
 
-        rpcConsole->setClientModel(_clientModel);
+        rpcConsole->setClientModel(clientModel);
 #ifdef ENABLE_WALLET
         if(walletFrame)
         {
-            walletFrame->setClientModel(_clientModel);
+            walletFrame->setClientModel(clientModel);
         }
 #endif // ENABLE_WALLET
-        unitDisplayControl->setOptionsModel(_clientModel->getOptionsModel());
-        
-        OptionsModel* optionsModel = _clientModel->getOptionsModel();
-        if(optionsModel)
-        {
-            // be aware of the tray icon disable state change reported by the OptionsModel object.
-            connect(optionsModel,SIGNAL(hideTrayIconChanged(bool)),this,SLOT(setTrayIconVisible(bool)));
-        
-            // initialize the disable state of the tray icon with the current value in the model.
-            setTrayIconVisible(optionsModel->getHideTrayIcon());
-        }
-
-        modalOverlay->setKnownBestHeight(clientModel->getHeaderTipHeight(), QDateTime::fromTime_t(clientModel->getHeaderTipTime()));
+        unitDisplayControl->setOptionsModel(clientModel->getOptionsModel());
     } else {
         // Disable possibility to show main window via action
         toggleHideAction->setEnabled(false);
@@ -573,20 +631,18 @@ void KredsGUI::setClientModel(ClientModel *_clientModel)
             // Disable context menu on tray icon
             trayIconMenu->clear();
         }
-        // Propagate cleared model to child objects
-        rpcConsole->setClientModel(nullptr);
-#ifdef ENABLE_WALLET
-        if (walletFrame)
+#ifdef Q_OS_MAC
+        if(dockIconMenu)
         {
-            walletFrame->setClientModel(nullptr);
+            // Disable context menu on dock icon
+            dockIconMenu->clear();
         }
-#endif // ENABLE_WALLET
-        unitDisplayControl->setOptionsModel(nullptr);
+#endif
     }
 }
 
 #ifdef ENABLE_WALLET
-bool KredsGUI::addWallet(const QString& name, WalletModel *walletModel)
+bool BitcoinGUI::addWallet(const QString& name, WalletModel *walletModel)
 {
     if(!walletFrame)
         return false;
@@ -594,14 +650,14 @@ bool KredsGUI::addWallet(const QString& name, WalletModel *walletModel)
     return walletFrame->addWallet(name, walletModel);
 }
 
-bool KredsGUI::setCurrentWallet(const QString& name)
+bool BitcoinGUI::setCurrentWallet(const QString& name)
 {
     if(!walletFrame)
         return false;
     return walletFrame->setCurrentWallet(name);
 }
 
-void KredsGUI::removeAllWallets()
+void BitcoinGUI::removeAllWallets()
 {
     if(!walletFrame)
         return;
@@ -610,7 +666,7 @@ void KredsGUI::removeAllWallets()
 }
 #endif // ENABLE_WALLET
 
-void KredsGUI::setWalletActionsEnabled(bool enabled)
+void BitcoinGUI::setWalletActionsEnabled(bool enabled)
 {
     overviewAction->setEnabled(enabled);
     sendCoinsAction->setEnabled(enabled);
@@ -618,13 +674,13 @@ void KredsGUI::setWalletActionsEnabled(bool enabled)
     receiveCoinsAction->setEnabled(enabled);
     receiveCoinsMenuAction->setEnabled(enabled);
     historyAction->setEnabled(enabled);
-	
-	masternodeAction->setEnabled(enabled);
-	//bip38ToolAction->setEnabled(enabled);
+    QSettings settings;
+    if (settings.value("fShowMasternodesTab").toBool() && masternodeAction) {
+        masternodeAction->setEnabled(enabled);
+    }
     encryptWalletAction->setEnabled(enabled);
     backupWalletAction->setEnabled(enabled);
     changePassphraseAction->setEnabled(enabled);
-    unlockWalletAction->setEnabled(enabled);
     signMessageAction->setEnabled(enabled);
     verifyMessageAction->setEnabled(enabled);
     usedSendingAddressesAction->setEnabled(enabled);
@@ -632,60 +688,45 @@ void KredsGUI::setWalletActionsEnabled(bool enabled)
     openAction->setEnabled(enabled);
 }
 
-void KredsGUI::createTrayIcon(const NetworkStyle *networkStyle)
+void BitcoinGUI::createTrayIcon(const NetworkStyle *networkStyle)
 {
-#ifndef Q_OS_MAC
     trayIcon = new QSystemTrayIcon(this);
-    QString toolTip = tr("%1 client").arg(tr(PACKAGE_NAME)) + " " + networkStyle->getTitleAddText();
+    QString toolTip = tr("HTH Core client") + " " + networkStyle->getTitleAddText();
     trayIcon->setToolTip(toolTip);
     trayIcon->setIcon(networkStyle->getTrayAndWindowIcon());
-    trayIcon->hide();
-#endif
-
+    trayIcon->show();
     notificator = new Notificator(QApplication::applicationName(), trayIcon, this);
 }
 
-void KredsGUI::createTrayIconMenu()
+void BitcoinGUI::createIconMenu(QMenu *pmenu)
 {
-#ifndef Q_OS_MAC
-    // return if trayIcon is unset (only on non-Mac OSes)
-    if (!trayIcon)
-        return;
-
-    trayIconMenu = new QMenu(this);
-    trayIcon->setContextMenu(trayIconMenu);
-
-    connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
-            this, SLOT(trayIconActivated(QSystemTrayIcon::ActivationReason)));
-#else
-    // Note: On Mac, the dock icon is used to provide the tray's functionality.
-    MacDockIconHandler *dockIconHandler = MacDockIconHandler::instance();
-    dockIconHandler->setMainWindow((QMainWindow *)this);
-    trayIconMenu = dockIconHandler->dockMenu();
-#endif
-
     // Configuration of the tray icon (or dock icon) icon menu
-    trayIconMenu->addAction(toggleHideAction);
-    trayIconMenu->addSeparator();
-    trayIconMenu->addAction(sendCoinsMenuAction);
-    trayIconMenu->addAction(receiveCoinsMenuAction);
-    trayIconMenu->addSeparator();
-    trayIconMenu->addAction(signMessageAction);
-    trayIconMenu->addAction(verifyMessageAction);
-    trayIconMenu->addSeparator();
-    trayIconMenu->addAction(optionsAction);
-    trayIconMenu->addAction(openRPCConsoleAction);
-	trayIconMenu->addAction(showBackupsAction);
-	trayIconMenu->addAction(showKredsConfAction);
-	trayIconMenu->addAction(showConfAction);
+    pmenu->addAction(toggleHideAction);
+    pmenu->addSeparator();
+    pmenu->addAction(sendCoinsMenuAction);
+    pmenu->addAction(receiveCoinsMenuAction);
+    pmenu->addSeparator();
+    pmenu->addAction(signMessageAction);
+    pmenu->addAction(verifyMessageAction);
+    pmenu->addSeparator();
+    pmenu->addAction(optionsAction);
+    pmenu->addAction(openInfoAction);
+    pmenu->addAction(openRPCConsoleAction);
+    pmenu->addAction(openGraphAction);
+    pmenu->addAction(openPeersAction);
+    pmenu->addAction(openRepairAction);
+    pmenu->addSeparator();
+    pmenu->addAction(openConfEditorAction);
+    pmenu->addAction(openMNConfEditorAction);
+    pmenu->addAction(showBackupsAction);
 #ifndef Q_OS_MAC // This is built-in on Mac
-    trayIconMenu->addSeparator();
-    trayIconMenu->addAction(quitAction);
+    pmenu->addSeparator();
+    pmenu->addAction(quitAction);
 #endif
 }
 
 #ifndef Q_OS_MAC
-void KredsGUI::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
+void BitcoinGUI::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
 {
     if(reason == QSystemTrayIcon::Trigger)
     {
@@ -695,7 +736,7 @@ void KredsGUI::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
 }
 #endif
 
-void KredsGUI::optionsClicked()
+void BitcoinGUI::optionsClicked()
 {
     if(!clientModel || !clientModel->getOptionsModel())
         return;
@@ -705,20 +746,16 @@ void KredsGUI::optionsClicked()
     dlg.exec();
 }
 
-void KredsGUI::aboutClicked()
+void BitcoinGUI::aboutClicked()
 {
     if(!clientModel)
         return;
 
-    HelpMessageDialog dlg(this, true);
+    HelpMessageDialog dlg(this, HelpMessageDialog::about);
     dlg.exec();
 }
-/*void KredsGUI::gotoBip38Tool()
-{
-    if (walletFrame) walletFrame->gotoBip38Tool();
-}*/
 
-void KredsGUI::showDebugWindow()
+void BitcoinGUI::showDebugWindow()
 {
     rpcConsole->showNormal();
     rpcConsole->show();
@@ -726,19 +763,67 @@ void KredsGUI::showDebugWindow()
     rpcConsole->activateWindow();
 }
 
-void KredsGUI::showDebugWindowActivateConsole()
+void BitcoinGUI::showInfo()
+{
+    rpcConsole->setTabFocus(RPCConsole::TAB_INFO);
+    showDebugWindow();
+}
+
+void BitcoinGUI::showConsole()
 {
     rpcConsole->setTabFocus(RPCConsole::TAB_CONSOLE);
     showDebugWindow();
 }
 
-void KredsGUI::showHelpMessageClicked()
+void BitcoinGUI::showGraph()
+{
+    rpcConsole->setTabFocus(RPCConsole::TAB_GRAPH);
+    showDebugWindow();
+}
+
+void BitcoinGUI::showPeers()
+{
+    rpcConsole->setTabFocus(RPCConsole::TAB_PEERS);
+    showDebugWindow();
+}
+
+void BitcoinGUI::showRepair()
+{
+    rpcConsole->setTabFocus(RPCConsole::TAB_REPAIR);
+    showDebugWindow();
+}
+
+void BitcoinGUI::showConfEditor()
+{
+    GUIUtil::openConfigfile();
+}
+
+void BitcoinGUI::showMNConfEditor()
+{
+    GUIUtil::openMNConfigfile();
+}
+
+void BitcoinGUI::showBackups()
+{
+    GUIUtil::showBackups();
+}
+
+void BitcoinGUI::showHelpMessageClicked()
 {
     helpMessageDialog->show();
 }
 
+void BitcoinGUI::showPrivateSendHelpClicked()
+{
+    if(!clientModel)
+        return;
+
+    HelpMessageDialog dlg(this, HelpMessageDialog::pshelp);
+    dlg.exec();
+}
+
 #ifdef ENABLE_WALLET
-void KredsGUI::openClicked()
+void BitcoinGUI::openClicked()
 {
     OpenURIDialog dlg(this);
     if(dlg.exec())
@@ -747,157 +832,90 @@ void KredsGUI::openClicked()
     }
 }
 
-void KredsGUI::gotoOverviewPage()
+void BitcoinGUI::gotoOverviewPage()
 {
     overviewAction->setChecked(true);
     if (walletFrame) walletFrame->gotoOverviewPage();
 }
 
-void KredsGUI::gotoHistoryPage()
+void BitcoinGUI::gotoHistoryPage()
 {
     historyAction->setChecked(true);
     if (walletFrame) walletFrame->gotoHistoryPage();
 }
 
-void KredsGUI::gotoMasternodePage()
+void BitcoinGUI::gotoMasternodePage()
 {
-    masternodeAction->setChecked(true);
-    if (walletFrame) walletFrame->gotoMasternodePage();
+    QSettings settings;
+    if (settings.value("fShowMasternodesTab").toBool()) {
+        masternodeAction->setChecked(true);
+        if (walletFrame) walletFrame->gotoMasternodePage();
+    }
 }
 
-void KredsGUI::gotoReceiveCoinsPage()
+void BitcoinGUI::gotoReceiveCoinsPage()
 {
     receiveCoinsAction->setChecked(true);
     if (walletFrame) walletFrame->gotoReceiveCoinsPage();
 }
 
-void KredsGUI::gotoSendCoinsPage(QString addr)
+void BitcoinGUI::gotoSendCoinsPage(QString addr)
 {
     sendCoinsAction->setChecked(true);
     if (walletFrame) walletFrame->gotoSendCoinsPage(addr);
 }
 
-void KredsGUI::gotoSignMessageTab(QString addr)
+void BitcoinGUI::gotoSignMessageTab(QString addr)
 {
     if (walletFrame) walletFrame->gotoSignMessageTab(addr);
 }
 
-void KredsGUI::gotoVerifyMessageTab(QString addr)
+void BitcoinGUI::gotoVerifyMessageTab(QString addr)
 {
     if (walletFrame) walletFrame->gotoVerifyMessageTab(addr);
 }
 #endif // ENABLE_WALLET
 
-void KredsGUI::updateNetworkState()
+void BitcoinGUI::setNumConnections(int count)
 {
-    int count = clientModel->getNumConnections();
     QString icon;
-    bool IsMasternodeActive = activeMasternode.status == MASTERNODE_IS_CAPABLE || activeMasternode.status == MASTERNODE_REMOTELY_ENABLED;
-	if(IsMasternodeActive){
-		switch(count)
-		{
-		case 0: icon = ":/icons/connect_0_16"; break;
-		case 1: case 2: case 3: icon = ":/icons/connect_1_16"; break;
-		case 4: case 5: case 6: icon = ":/icons/connect_2_16"; break;
-		case 7: case 8: case 9: icon = ":/icons/connect_3_16"; break;
-		default: icon = ":/icons/connect_4_16"; break;
-		}
-	} else {
-		switch(count)
-		{
-		case 0: icon = ":/icons/connect_0"; break;
-		case 1: case 2: case 3: icon = ":/icons/connect_1"; break;
-		case 4: case 5: case 6: icon = ":/icons/connect_2"; break;
-		case 7: case 8: case 9: icon = ":/icons/connect_3"; break;
-		default: icon = ":/icons/connect_4"; break;
-		}
-	}
-
-    QString tooltip;
-
-    if (clientModel->getNetworkActive()) {
-		if(IsMasternodeActive){
-			tooltip = tr("%n active connection(s) to Kreds network", "", count) + QString(".<br>") + tr("Masternode is active ") + QString(".<br>") + tr("Click to disable network activity.");
-		}else {
-			tooltip = tr("%n active connection(s) to Kreds network", "", count) + QString(".<br>") + tr("Click to disable network activity.");
-		}
-    } else {
-        tooltip = tr("Network activity disabled.") + QString("<br>") + tr("Click to enable network activity again.");
-        icon = ":/icons/network_disabled";
-    }
-
-    // Don't word-wrap this (fixed-width) tooltip
-    tooltip = QString("<nobr>") + tooltip + QString("</nobr>");
-    connectionsControl->setToolTip(tooltip);
-
-    connectionsControl->setPixmap(platformStyle->SingleColorIcon(icon).pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-}
-
-void KredsGUI::setNumConnections(int count)
-{
-    updateNetworkState();
-}
-/** Get restart command-line parameters and request restart */
-void KredsGUI::handleRestart(QStringList args)
-{
-    if (!ShutdownRequested())
-        Q_EMIT requestedRestart(args);
-}
-void KredsGUI::setNetworkActive(bool networkActive)
-{
-    updateNetworkState();
-}
-
-void KredsGUI::updateHeadersSyncProgressLabel()
-{
-    int64_t headersTipTime = clientModel->getHeaderTipTime();
-    int headersTipHeight = clientModel->getHeaderTipHeight();
-    int estHeadersLeft = (GetTime() - headersTipTime) / Params().GetConsensus().nPowTargetSpacing;
-    if (estHeadersLeft > HEADER_HEIGHT_DELTA_SYNC)
-        progressBarLabel->setText(tr("Syncing Headers (%1%)...").arg(QString::number(100.0 / (headersTipHeight+estHeadersLeft)*headersTipHeight, 'f', 1)));
-}
-
-void KredsGUI::setNumBlocks(int count, const QDateTime& blockDate, double nVerificationProgress, bool header)
-{
-    if (modalOverlay)
+    QString theme = GUIUtil::getThemeName();
+    switch(count)
     {
-        if (header)
-            modalOverlay->setKnownBestHeight(count, blockDate);
-        else
-            modalOverlay->tipUpdate(count, blockDate, nVerificationProgress);
+    case 0: icon = ":/icons/" + theme + "/connect_0"; break;
+    case 1: case 2: case 3: icon = ":/icons/" + theme + "/connect_1"; break;
+    case 4: case 5: case 6: icon = ":/icons/" + theme + "/connect_2"; break;
+    case 7: case 8: case 9: icon = ":/icons/" + theme + "/connect_3"; break;
+    default: icon = ":/icons/" + theme + "/connect_4"; break;
     }
-    if (!clientModel)
+    QIcon connectionItem = QIcon(icon).pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE);
+    labelConnectionsIcon->setIcon(connectionItem);
+    labelConnectionsIcon->setToolTip(tr("%n active connection(s) to HTH network", "", count));
+}
+
+void BitcoinGUI::setNumBlocks(int count, const QDateTime& blockDate, double nVerificationProgress)
+{
+    if(!clientModel)
         return;
 
-    // Prevent orphan statusbar messages (e.g. hover Quit in main menu, wait until chain-sync starts -> garbled text)
+    // Prevent orphan statusbar messages (e.g. hover Quit in main menu, wait until chain-sync starts -> garbelled text)
     statusBar()->clearMessage();
 
     // Acquire current block source
     enum BlockSource blockSource = clientModel->getBlockSource();
     switch (blockSource) {
         case BLOCK_SOURCE_NETWORK:
-            if (header) {
-                updateHeadersSyncProgressLabel();
-                return;
-            }
             progressBarLabel->setText(tr("Synchronizing with network..."));
-            updateHeadersSyncProgressLabel();
             break;
         case BLOCK_SOURCE_DISK:
-            if (header) {
-                progressBarLabel->setText(tr("Indexing blocks on disk..."));
-            } else {
-                progressBarLabel->setText(tr("Processing blocks on disk..."));
-            }
+            progressBarLabel->setText(tr("Importing blocks from disk..."));
             break;
         case BLOCK_SOURCE_REINDEX:
             progressBarLabel->setText(tr("Reindexing blocks on disk..."));
             break;
         case BLOCK_SOURCE_NONE:
-            if (header) {
-                return;
-            }
-            progressBarLabel->setText(tr("Connecting to peers..."));
+            // Case: not Importing, not Reindexing and no network connection
+            progressBarLabel->setText(tr("No block source available..."));
             break;
     }
 
@@ -909,25 +927,34 @@ void KredsGUI::setNumBlocks(int count, const QDateTime& blockDate, double nVerif
     tooltip = tr("Processed %n block(s) of transaction history.", "", count);
 
     // Set icon state: spinning if catching up, tick otherwise
-    if(secs < 360*60)
-    {
-        tooltip = tr("Up to date") + QString(".<br>") + tooltip;
-        labelBlocksIcon->setPixmap(platformStyle->SingleColorIcon(":/icons/synced").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+    QString theme = GUIUtil::getThemeName();
 
-#ifdef ENABLE_WALLET
-        if(walletFrame)
+    if(!masternodeSync.IsBlockchainSynced())
+    {
+        // Represent time from last generated block in human readable text
+        QString timeBehindText;
+        const int HOUR_IN_SECONDS = 60*60;
+        const int DAY_IN_SECONDS = 24*60*60;
+        const int WEEK_IN_SECONDS = 7*24*60*60;
+        const int YEAR_IN_SECONDS = 31556952; // Average length of year in Gregorian calendar
+        if(secs < 2*DAY_IN_SECONDS)
         {
-            walletFrame->showOutOfSyncWarning(false);
-            modalOverlay->showHide(true, true);
+            timeBehindText = tr("%n hour(s)","",secs/HOUR_IN_SECONDS);
         }
-#endif // ENABLE_WALLET
-
-        progressBarLabel->setVisible(false);
-        progressBar->setVisible(false);
-    }
-    else
-    {
-        QString timeBehindText = GUIUtil::formatNiceTimeOffset(secs);
+        else if(secs < 2*WEEK_IN_SECONDS)
+        {
+            timeBehindText = tr("%n day(s)","",secs/DAY_IN_SECONDS);
+        }
+        else if(secs < YEAR_IN_SECONDS)
+        {
+            timeBehindText = tr("%n week(s)","",secs/WEEK_IN_SECONDS);
+        }
+        else
+        {
+            qint64 years = secs / YEAR_IN_SECONDS;
+            qint64 remainder = secs % YEAR_IN_SECONDS;
+            timeBehindText = tr("%1 and %2").arg(tr("%n year(s)", "", years)).arg(tr("%n week(s)","", remainder/WEEK_IN_SECONDS));
+        }
 
         progressBarLabel->setVisible(true);
         progressBar->setFormat(tr("%1 behind").arg(timeBehindText));
@@ -947,10 +974,7 @@ void KredsGUI::setNumBlocks(int count, const QDateTime& blockDate, double nVerif
 
 #ifdef ENABLE_WALLET
         if(walletFrame)
-        {
             walletFrame->showOutOfSyncWarning(true);
-            modalOverlay->showHide();
-        }
 #endif // ENABLE_WALLET
 
         tooltip += QString("<br>");
@@ -967,9 +991,61 @@ void KredsGUI::setNumBlocks(int count, const QDateTime& blockDate, double nVerif
     progressBar->setToolTip(tooltip);
 }
 
-void KredsGUI::message(const QString &title, const QString &message, unsigned int style, bool *ret)
+void BitcoinGUI::setAdditionalDataSyncProgress(double nSyncProgress)
 {
-    QString strTitle = tr("Kreds"); // default title
+    if(!clientModel)
+        return;
+
+    // Prevent orphan statusbar messages (e.g. hover Quit in main menu, wait until chain-sync starts -> garbelled text)
+    statusBar()->clearMessage();
+
+    QString tooltip;
+
+    // Set icon state: spinning if catching up, tick otherwise
+    QString theme = GUIUtil::getThemeName();
+
+    if(masternodeSync.IsBlockchainSynced())
+    {
+        QString strSyncStatus;
+        tooltip = tr("Up to date") + QString(".<br>") + tooltip;
+
+        if(masternodeSync.IsSynced()) {
+            progressBarLabel->setVisible(false);
+            progressBar->setVisible(false);
+            labelBlocksIcon->setPixmap(QIcon(":/icons/" + theme + "/synced").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+        } else {
+
+            labelBlocksIcon->setPixmap(platformStyle->SingleColorIcon(QString(
+                ":/movies/spinner-%1").arg(spinnerFrame, 3, 10, QChar('0')))
+                .pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+            spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES;
+
+#ifdef ENABLE_WALLET
+            if(walletFrame)
+                walletFrame->showOutOfSyncWarning(false);
+#endif // ENABLE_WALLET
+
+            progressBar->setFormat(tr("Synchronizing additional data: %p%"));
+            progressBar->setMaximum(1000000000);
+            progressBar->setValue(nSyncProgress * 1000000000.0 + 0.5);
+        }
+
+        strSyncStatus = QString(masternodeSync.GetSyncStatus().c_str());
+        progressBarLabel->setText(strSyncStatus);
+        tooltip = strSyncStatus + QString("<br>") + tooltip;
+    }
+
+    // Don't word-wrap this (fixed-width) tooltip
+    tooltip = QString("<nobr>") + tooltip + QString("</nobr>");
+
+    labelBlocksIcon->setToolTip(tooltip);
+    progressBarLabel->setToolTip(tooltip);
+    progressBar->setToolTip(tooltip);
+}
+
+void BitcoinGUI::message(const QString &title, const QString &message, unsigned int style, bool *ret)
+{
+    QString strTitle = tr("HTH Core"); // default title
     // Default to information icon
     int nMBoxIcon = QMessageBox::Information;
     int nNotifyIcon = Notificator::Information;
@@ -995,7 +1071,7 @@ void KredsGUI::message(const QString &title, const QString &message, unsigned in
             break;
         }
     }
-    // Append title to "Kreds - "
+    // Append title to "HTH Core - "
     if (!msgType.isEmpty())
         strTitle += " - " + msgType;
 
@@ -1026,7 +1102,7 @@ void KredsGUI::message(const QString &title, const QString &message, unsigned in
         notificator->notify((Notificator::Class)nNotifyIcon, strTitle, message);
 }
 
-void KredsGUI::changeEvent(QEvent *e)
+void BitcoinGUI::changeEvent(QEvent *e)
 {
     QMainWindow::changeEvent(e);
 #ifndef Q_OS_MAC // Ignored on Mac
@@ -1045,7 +1121,7 @@ void KredsGUI::changeEvent(QEvent *e)
 #endif
 }
 
-void KredsGUI::closeEvent(QCloseEvent *event)
+void BitcoinGUI::closeEvent(QCloseEvent *event)
 {
 #ifndef Q_OS_MAC // Ignored on Mac
     if(clientModel && clientModel->getOptionsModel())
@@ -1057,31 +1133,29 @@ void KredsGUI::closeEvent(QCloseEvent *event)
 
             QApplication::quit();
         }
-        else
-        {
-            QMainWindow::showMinimized();
-            event->ignore();
-        }
     }
-#else
-    QMainWindow::closeEvent(event);
 #endif
+    QMainWindow::closeEvent(event);
 }
 
-void KredsGUI::showEvent(QShowEvent *event)
+void BitcoinGUI::showEvent(QShowEvent *event)
 {
     // enable the debug window when the main window shows up
+    openInfoAction->setEnabled(true);
     openRPCConsoleAction->setEnabled(true);
+    openGraphAction->setEnabled(true);
+    openPeersAction->setEnabled(true);
+    openRepairAction->setEnabled(true);
     aboutAction->setEnabled(true);
     optionsAction->setEnabled(true);
 }
 
 #ifdef ENABLE_WALLET
-void KredsGUI::incomingTransaction(const QString& date, int unit, const CAmount& amount, const QString& type, const QString& address, const QString& label)
+void BitcoinGUI::incomingTransaction(const QString& date, int unit, const CAmount& amount, const QString& type, const QString& address, const QString& label)
 {
     // On new transaction, make an info balloon
     QString msg = tr("Date: %1\n").arg(date) +
-                  tr("Amount: %1\n").arg(KredsUnits::formatWithUnit(unit, amount, true)) +
+                  tr("Amount: %1\n").arg(BitcoinUnits::formatWithUnit(unit, amount, true)) +
                   tr("Type: %1\n").arg(type);
     if (!label.isEmpty())
         msg += tr("Label: %1\n").arg(label);
@@ -1092,14 +1166,14 @@ void KredsGUI::incomingTransaction(const QString& date, int unit, const CAmount&
 }
 #endif // ENABLE_WALLET
 
-void KredsGUI::dragEnterEvent(QDragEnterEvent *event)
+void BitcoinGUI::dragEnterEvent(QDragEnterEvent *event)
 {
     // Accept only URIs
     if(event->mimeData()->hasUrls())
         event->acceptProposedAction();
 }
 
-void KredsGUI::dropEvent(QDropEvent *event)
+void BitcoinGUI::dropEvent(QDropEvent *event)
 {
     if(event->mimeData()->hasUrls())
     {
@@ -1111,7 +1185,7 @@ void KredsGUI::dropEvent(QDropEvent *event)
     event->acceptProposedAction();
 }
 
-bool KredsGUI::eventFilter(QObject *object, QEvent *event)
+bool BitcoinGUI::eventFilter(QObject *object, QEvent *event)
 {
     // Catch status tip events
     if (event->type() == QEvent::StatusTip)
@@ -1124,7 +1198,7 @@ bool KredsGUI::eventFilter(QObject *object, QEvent *event)
 }
 
 #ifdef ENABLE_WALLET
-bool KredsGUI::handlePaymentRequest(const SendCoinsRecipient& recipient)
+bool BitcoinGUI::handlePaymentRequest(const SendCoinsRecipient& recipient)
 {
     // URI has to be valid
     if (walletFrame && walletFrame->handlePaymentRequest(recipient))
@@ -1136,49 +1210,54 @@ bool KredsGUI::handlePaymentRequest(const SendCoinsRecipient& recipient)
     return false;
 }
 
-void KredsGUI::setHDStatus(int hdEnabled)
+void BitcoinGUI::setEncryptionStatus(int status)
 {
-    labelWalletHDStatusIcon->setPixmap(platformStyle->SingleColorIcon(hdEnabled ? ":/icons/hd_enabled" : ":/icons/hd_disabled").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-    labelWalletHDStatusIcon->setToolTip(hdEnabled ? tr("HD key generation is <b>enabled</b>") : tr("HD key generation is <b>disabled</b>"));
-
-    // eventually disable the QLabel to set its opacity to 50% 
-    labelWalletHDStatusIcon->setEnabled(hdEnabled);
-}
-
-void KredsGUI::setEncryptionStatus(int status)
-{
+    QString theme = GUIUtil::getThemeName();
     switch(status)
     {
     case WalletModel::Unencrypted:
-        labelWalletEncryptionIcon->hide();
+        labelEncryptionIcon->hide();
         encryptWalletAction->setChecked(false);
         changePassphraseAction->setEnabled(false);
-        unlockWalletAction->setEnabled(false);
+        unlockWalletAction->setVisible(false);
+        lockWalletAction->setVisible(false);
         encryptWalletAction->setEnabled(true);
         break;
     case WalletModel::Unlocked:
-        labelWalletEncryptionIcon->show();
-        labelWalletEncryptionIcon->setPixmap(platformStyle->SingleColorIcon(":/icons/lock_open").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-        labelWalletEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked</b>"));
+        labelEncryptionIcon->show();
+        labelEncryptionIcon->setPixmap(QIcon(":/icons/" + theme + "/lock_open").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
+        labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked</b>"));
         encryptWalletAction->setChecked(true);
         changePassphraseAction->setEnabled(true);
-        unlockWalletAction->setEnabled(false);
+        unlockWalletAction->setVisible(false);
+        lockWalletAction->setVisible(true);
+        encryptWalletAction->setEnabled(false); // TODO: decrypt currently not supported
+        break;
+    case WalletModel::UnlockedForMixingOnly:
+        labelEncryptionIcon->show();
+        labelEncryptionIcon->setPixmap(QIcon(":/icons/" + theme + "/lock_open").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
+        labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked</b> for mixing only"));
+        encryptWalletAction->setChecked(true);
+        changePassphraseAction->setEnabled(true);
+        unlockWalletAction->setVisible(true);
+        lockWalletAction->setVisible(true);
         encryptWalletAction->setEnabled(false); // TODO: decrypt currently not supported
         break;
     case WalletModel::Locked:
-        labelWalletEncryptionIcon->show();
-        labelWalletEncryptionIcon->setPixmap(platformStyle->SingleColorIcon(":/icons/lock_closed").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-        labelWalletEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>locked</b>"));
+        labelEncryptionIcon->show();
+        labelEncryptionIcon->setPixmap(QIcon(":/icons/" + theme + "/lock_closed").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
+        labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>locked</b>"));
         encryptWalletAction->setChecked(true);
         changePassphraseAction->setEnabled(true);
-        unlockWalletAction->setEnabled(true);
+        unlockWalletAction->setVisible(true);
+        lockWalletAction->setVisible(false);
         encryptWalletAction->setEnabled(false); // TODO: decrypt currently not supported
         break;
     }
 }
 #endif // ENABLE_WALLET
 
-void KredsGUI::showNormalIfMinimized(bool fToggleHidden)
+void BitcoinGUI::showNormalIfMinimized(bool fToggleHidden)
 {
     if(!clientModel)
         return;
@@ -1203,12 +1282,12 @@ void KredsGUI::showNormalIfMinimized(bool fToggleHidden)
         hide();
 }
 
-void KredsGUI::toggleHidden()
+void BitcoinGUI::toggleHidden()
 {
     showNormalIfMinimized(true);
 }
 
-void KredsGUI::detectShutdown()
+void BitcoinGUI::detectShutdown()
 {
     if (ShutdownRequested())
     {
@@ -1218,7 +1297,7 @@ void KredsGUI::detectShutdown()
     }
 }
 
-void KredsGUI::showProgress(const QString &title, int nProgress)
+void BitcoinGUI::showProgress(const QString &title, int nProgress)
 {
     if (nProgress == 0)
     {
@@ -1241,21 +1320,7 @@ void KredsGUI::showProgress(const QString &title, int nProgress)
         progressDialog->setValue(nProgress);
 }
 
-void KredsGUI::setTrayIconVisible(bool fHideTrayIcon)
-{
-    if (trayIcon)
-    {
-        trayIcon->setVisible(!fHideTrayIcon);
-    }
-}
-
-void KredsGUI::showModalOverlay()
-{
-    if (modalOverlay && (progressBar->isVisible() || modalOverlay->isLayerVisible()))
-        modalOverlay->toggleVisibility();
-}
-
-static bool ThreadSafeMessageBox(KredsGUI *gui, const std::string& message, const std::string& caption, unsigned int style)
+static bool ThreadSafeMessageBox(BitcoinGUI *gui, const std::string& message, const std::string& caption, unsigned int style)
 {
     bool modal = (style & CClientUIInterface::MODAL);
     // The SECURE flag has no effect in the Qt GUI.
@@ -1272,25 +1337,23 @@ static bool ThreadSafeMessageBox(KredsGUI *gui, const std::string& message, cons
     return ret;
 }
 
-void KredsGUI::subscribeToCoreSignals()
+void BitcoinGUI::subscribeToCoreSignals()
 {
     // Connect signals to client
     uiInterface.ThreadSafeMessageBox.connect(boost::bind(ThreadSafeMessageBox, this, _1, _2, _3));
-    uiInterface.ThreadSafeQuestion.connect(boost::bind(ThreadSafeMessageBox, this, _1, _3, _4));
 }
 
-void KredsGUI::unsubscribeFromCoreSignals()
+void BitcoinGUI::unsubscribeFromCoreSignals()
 {
     // Disconnect signals from client
     uiInterface.ThreadSafeMessageBox.disconnect(boost::bind(ThreadSafeMessageBox, this, _1, _2, _3));
-    uiInterface.ThreadSafeQuestion.disconnect(boost::bind(ThreadSafeMessageBox, this, _1, _3, _4));
 }
 
-void KredsGUI::toggleNetworkActive()
+/** Get restart command-line parameters and request restart */
+void BitcoinGUI::handleRestart(QStringList args)
 {
-    if (clientModel) {
-        clientModel->setNetworkActive(!clientModel->getNetworkActive());
-    }
+    if (!ShutdownRequested())
+        Q_EMIT requestedRestart(args);
 }
 
 UnitDisplayStatusBarControl::UnitDisplayStatusBarControl(const PlatformStyle *platformStyle) :
@@ -1299,12 +1362,12 @@ UnitDisplayStatusBarControl::UnitDisplayStatusBarControl(const PlatformStyle *pl
 {
     createContextMenu();
     setToolTip(tr("Unit to show amounts in. Click to select another unit."));
-    QList<KredsUnits::Unit> units = KredsUnits::availableUnits();
+    QList<BitcoinUnits::Unit> units = BitcoinUnits::availableUnits();
     int max_width = 0;
     const QFontMetrics fm(font());
-    Q_FOREACH (const KredsUnits::Unit unit, units)
+    Q_FOREACH (const BitcoinUnits::Unit unit, units)
     {
-        max_width = qMax(max_width, fm.width(KredsUnits::name(unit)));
+        max_width = qMax(max_width, fm.width(BitcoinUnits::name(unit)));
     }
     setMinimumSize(max_width, 0);
     setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -1320,10 +1383,10 @@ void UnitDisplayStatusBarControl::mousePressEvent(QMouseEvent *event)
 /** Creates context menu, its actions, and wires up all the relevant signals for mouse events. */
 void UnitDisplayStatusBarControl::createContextMenu()
 {
-    menu = new QMenu(this);
-    Q_FOREACH(KredsUnits::Unit u, KredsUnits::availableUnits())
+    menu = new QMenu();
+    Q_FOREACH(BitcoinUnits::Unit u, BitcoinUnits::availableUnits())
     {
-        QAction *menuAction = new QAction(QString(KredsUnits::name(u)), this);
+        QAction *menuAction = new QAction(QString(BitcoinUnits::name(u)), this);
         menuAction->setData(QVariant(u));
         menu->addAction(menuAction);
     }
@@ -1331,24 +1394,24 @@ void UnitDisplayStatusBarControl::createContextMenu()
 }
 
 /** Lets the control know about the Options Model (and its signals) */
-void UnitDisplayStatusBarControl::setOptionsModel(OptionsModel *_optionsModel)
+void UnitDisplayStatusBarControl::setOptionsModel(OptionsModel *optionsModel)
 {
-    if (_optionsModel)
+    if (optionsModel)
     {
-        this->optionsModel = _optionsModel;
+        this->optionsModel = optionsModel;
 
         // be aware of a display unit change reported by the OptionsModel object.
-        connect(_optionsModel,SIGNAL(displayUnitChanged(int)),this,SLOT(updateDisplayUnit(int)));
+        connect(optionsModel,SIGNAL(displayUnitChanged(int)),this,SLOT(updateDisplayUnit(int)));
 
         // initialize the display units label with the current value in the model.
-        updateDisplayUnit(_optionsModel->getDisplayUnit());
+        updateDisplayUnit(optionsModel->getDisplayUnit());
     }
 }
 
 /** When Display Units are changed on OptionsModel it will refresh the display text of the control on the status bar */
 void UnitDisplayStatusBarControl::updateDisplayUnit(int newUnits)
 {
-    setText(KredsUnits::name(newUnits));
+    setText(BitcoinUnits::name(newUnits));
 }
 
 /** Shows context menu with Display Unit options by the mouse coordinates */
