@@ -48,9 +48,9 @@ static const int MAX_URI_LENGTH = 255;
 /* Number of frames in spinner animation */
 #define SPINNER_FRAMES 36
 
-#define QAPP_ORG_NAME "Kreds"
-#define QAPP_ORG_DOMAIN "kreds.info"
-#define QAPP_APP_NAME_DEFAULT "Kreds-Qt"
-#define QAPP_APP_NAME_TESTNET "Kreds-Qt-testnet"
+#define QAPP_ORG_NAME "HTH"
+#define QAPP_ORG_DOMAIN "hthcoin.world"
+#define QAPP_APP_NAME_DEFAULT "HTH-Qt"
+#define QAPP_APP_NAME_TESTNET "HTH-Qt-testnet"
 
 #endif // KREDS_QT_GUICONSTANTS_H
