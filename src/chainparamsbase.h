@@ -1,16 +1,16 @@
-// Copyright (c) 2014-2015 The Kreds Developers
+// Copyright (c) 2014-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_CHAINPARAMSBASE_H
-#define KREDS_CHAINPARAMSBASE_H
+#ifndef BITCOIN_CHAINPARAMSBASE_H
+#define BITCOIN_CHAINPARAMSBASE_H
 
 #include <string>
 #include <vector>
 
 /**
- * CBaseChainParams defines the base parameters (shared between kreds-cli and kredsd)
- * of a given instance of the Kreds system.
+ * CBaseChainParams defines the base parameters (shared between hth-cli and hthd)
+ * of a given instance of the HTH system.
  */
 class CBaseChainParams
 {
@@ -59,4 +59,4 @@ std::string ChainNameFromCommandLine();
  */
 bool AreBaseParamsConfigured();
 
-#endif // KREDS_CHAINPARAMSBASE_H
+#endif // BITCOIN_CHAINPARAMSBASE_H
