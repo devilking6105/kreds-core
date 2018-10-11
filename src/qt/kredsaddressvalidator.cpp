@@ -1,26 +1,28 @@
-// Copyright (c) 2011-2014 The Kreds Developers
+// Copyright (c) 2011-2014 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "kredsaddressvalidator.h"
+#include "bitcoinaddressvalidator.h"
 
 #include "base58.h"
 
 /* Base58 characters are:
      "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
   This is:
   - All numbers except for '0'
   - All upper-case letters except for 'I' and 'O'
   - All lower-case letters except for 'l'
 */
 
-KredsAddressEntryValidator::KredsAddressEntryValidator(QObject *parent) :
+BitcoinAddressEntryValidator::BitcoinAddressEntryValidator(QObject *parent) :
     QValidator(parent)
 {
 }
 
-QValidator::State KredsAddressEntryValidator::validate(QString &input, int &pos) const
+QValidator::State BitcoinAddressEntryValidator::validate(QString &input, int &pos) const
 {
     Q_UNUSED(pos);
 
@@ -80,16 +82,16 @@ QValidator::State KredsAddressEntryValidator::validate(QString &input, int &pos)
     return state;
 }
 
-KredsAddressCheckValidator::KredsAddressCheckValidator(QObject *parent) :
+BitcoinAddressCheckValidator::BitcoinAddressCheckValidator(QObject *parent) :
     QValidator(parent)
 {
 }
 
-QValidator::State KredsAddressCheckValidator::validate(QString &input, int &pos) const
+QValidator::State BitcoinAddressCheckValidator::validate(QString &input, int &pos) const
 {
     Q_UNUSED(pos);
     // Validate the passed HTH address
-    CKredsAddress addr(input.toStdString());
+    CBitcoinAddress addr(input.toStdString());
     if (addr.IsValid())
         return QValidator::Acceptable;
 
