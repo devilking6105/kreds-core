@@ -1,12 +1,13 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers 
-// Copyright (c) 2015-2017 The Dash developers 
-// Copyright (c) 2015-2017 The Kreds developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_UINT256_H
-#define KREDS_UINT256_H
+#ifndef BITCOIN_UINT256_H
+#define BITCOIN_UINT256_H
 
 #include <assert.h>
 #include <cstring>
@@ -80,6 +81,11 @@ public:
         return sizeof(data);
     }
 
+    unsigned int GetSerializeSize(int nType, int nVersion) const
+    {
+        return sizeof(data);
+    }
+
     uint64_t GetUint64(int pos) const
     {
         const uint8_t* ptr = data + pos * 8;
@@ -94,13 +100,13 @@ public:
     }
 
     template<typename Stream>
-    void Serialize(Stream& s) const
+    void Serialize(Stream& s, int nType, int nVersion) const
     {
         s.write((char*)data, sizeof(data));
     }
 
     template<typename Stream>
-    void Unserialize(Stream& s)
+    void Unserialize(Stream& s, int nType, int nVersion)
     {
         s.read((char*)data, sizeof(data));
     }
@@ -128,6 +134,13 @@ public:
     uint256(const base_blob<256>& b) : base_blob<256>(b) {}
     explicit uint256(const std::vector<unsigned char>& vch) : base_blob<256>(vch) {}
 
+    int GetNibble(int index) const 
+    {
+        index = 63 - index;
+        if (index % 2 == 1)
+            return(data[index / 2] >> 4);
+        return(data[index / 2] & 0x0F); 
+    }
     /** A cheap hash function that just returns 64 bits from the result, it can be
      * used when the contents are considered uniformly random. It is not appropriate
      * when the value can easily be influenced from outside as e.g. a network adversary could
@@ -137,6 +150,11 @@ public:
     {
         return ReadLE64(data);
     }
+
+    /** A more secure, salted hash function.
+     * @note This hash is not stable between little and big endian.
+     */
+    uint64_t GetHash(const uint256& salt) const;
 };
 
 /* uint256 from const char *.
@@ -160,7 +178,6 @@ inline uint256 uint256S(const std::string& str)
     return rv;
 }
 
-/**TODO-- */
 /** 512-bit unsigned big integer. */
 class uint512 : public base_blob<512> {
 public:
@@ -177,5 +194,4 @@ public:
 };
 
 
-
-#endif // KREDS_UINT256_H
+#endif // BITCOIN_UINT256_H
