@@ -13,7 +13,7 @@ void ThreadBitPool()
     if(fProUserModeDarksendInstantX2) return; //disable all Darksend/Masternode related functionality
 
     // Make this thread recognisable as the wallet flushing thread
-    RenameThread("kreds-darksend");
+    RenameThread("hth-darksend");
 
     unsigned int c = 0;
     std::string errorMessage;
