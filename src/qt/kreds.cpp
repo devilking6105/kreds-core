@@ -1,12 +1,15 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include "config/kreds-config.h"
+#include "config/hth-config.h"
 #endif
 
-#include "kredsgui.h"
+#include "bitcoingui.h"
 
 #include "chainparams.h"
 #include "clientmodel.h"
