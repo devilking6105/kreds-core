@@ -1,14 +1,13 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2017 The Bitcoin Core developers 
-// Copyright (c) 2015-2017 The Dash developers 
-// Copyright (c) 2015-2017 The Kreds developers
+// Copyright (c) 2009-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include "config/kreds-config.h"
+#include "config/hth-config.h"
 #endif
 
+#include "tinyformat.h"
 #include "utiltime.h"
 
 #include <boost/date_time/posix_time/posix_time.hpp>
@@ -16,7 +15,7 @@
 
 using namespace std;
 
-static int64_t nMockTime = 0; //!< For unit testing
+static int64_t nMockTime = 0;  //! For unit testing
 
 int64_t GetTime()
 {
@@ -48,11 +47,6 @@ int64_t GetTimeMicros()
     return now;
 }
 
-int64_t GetSystemTimeInSeconds()
-{
-    return GetTimeMicros()/1000000;
-}
-
 /** Return a time useful for the debug log */
 int64_t GetLogTimeMicros()
 {
@@ -65,7 +59,7 @@ void MilliSleep(int64_t n)
 {
 
 /**
- * Boost's sleep_for was uninterruptible when backed by nanosleep from 1.50
+ * Boost's sleep_for was uninterruptable when backed by nanosleep from 1.50
  * until fixed in 1.52. Use the deprecated sleep method for the broken case.
  * See: https://svn.boost.org/trac/boost/ticket/7238
  */
@@ -81,11 +75,25 @@ void MilliSleep(int64_t n)
 
 std::string DateTimeStrFormat(const char* pszFormat, int64_t nTime)
 {
-    static std::locale classic(std::locale::classic());
     // std::locale takes ownership of the pointer
-    std::locale loc(classic, new boost::posix_time::time_facet(pszFormat));
+    std::locale loc(std::locale::classic(), new boost::posix_time::time_facet(pszFormat));
     std::stringstream ss;
     ss.imbue(loc);
     ss << boost::posix_time::from_time_t(nTime);
     return ss.str();
+}
+
+std::string DurationToDHMS(int64_t nDurationTime)
+{
+    int seconds = nDurationTime % 60;
+    nDurationTime /= 60;
+    int minutes = nDurationTime % 60;
+    nDurationTime /= 60;
+    int hours = nDurationTime % 24;
+    int days = nDurationTime / 24;
+    if(days)
+        return strprintf("%dd %02dh:%02dm:%02ds", days, hours, minutes, seconds);
+    if(hours)
+        return strprintf("%02dh:%02dm:%02ds", hours, minutes, seconds);
+    return strprintf("%02dm:%02ds", minutes, seconds);
 }
