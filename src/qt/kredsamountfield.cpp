@@ -4,7 +4,7 @@
 
 #include "kredsamountfield.h"
 
-#include "kredsunits.h"
+#include "bitcoinunits.h"
 #include "guiconstants.h"
 #include "qvaluecombobox.h"
 
@@ -24,7 +24,7 @@ class AmountSpinBox: public QAbstractSpinBox
 public:
     explicit AmountSpinBox(QWidget *parent):
         QAbstractSpinBox(parent),
-        currentUnit(KredsUnits::KREDS),
+        currentUnit(BitcoinUnits::HTH),
         singleStep(100000) // satoshis
     {
         setAlignment(Qt::AlignRight);
@@ -48,7 +48,7 @@ public:
         CAmount val = parse(input, &valid);
         if(valid)
         {
-            input = KredsUnits::format(currentUnit, val, false, KredsUnits::separatorAlways);
+            input = BitcoinUnits::format(currentUnit, val, false, BitcoinUnits::separatorAlways);
             lineEdit()->setText(input);
         }
     }
@@ -60,7 +60,7 @@ public:
 
     void setValue(const CAmount& value)
     {
-        lineEdit()->setText(KredsUnits::format(currentUnit, value, false, KredsUnits::separatorAlways));
+        lineEdit()->setText(BitcoinUnits::format(currentUnit, value, false, BitcoinUnits::separatorAlways));
         Q_EMIT valueChanged();
     }
 
@@ -69,7 +69,7 @@ public:
         bool valid = false;
         CAmount val = value(&valid);
         val = val + steps * singleStep;
-        val = qMin(qMax(val, CAmount(0)), KredsUnits::maxMoney());
+        val = qMin(qMax(val, CAmount(0)), BitcoinUnits::maxMoney());
         setValue(val);
     }
 
@@ -99,7 +99,7 @@ public:
 
             const QFontMetrics fm(fontMetrics());
             int h = lineEdit()->minimumSizeHint().height();
-            int w = fm.width(KredsUnits::format(KredsUnits::KREDS, KredsUnits::maxMoney(), false, KredsUnits::separatorAlways));
+            int w = fm.width(BitcoinUnits::format(BitcoinUnits::HTH, BitcoinUnits::maxMoney(), false, BitcoinUnits::separatorAlways));
             w += 2; // cursor blinking space
 
             QStyleOptionSpinBox opt;
@@ -137,10 +137,10 @@ private:
     CAmount parse(const QString &text, bool *valid_out=0) const
     {
         CAmount val = 0;
-        bool valid = KredsUnits::parse(currentUnit, text, &val);
+        bool valid = BitcoinUnits::parse(currentUnit, text, &val);
         if(valid)
         {
-            if(val < 0 || val > KredsUnits::maxMoney())
+            if(val < 0 || val > BitcoinUnits::maxMoney())
                 valid = false;
         }
         if(valid_out)
@@ -178,7 +178,7 @@ protected:
         {
             if(val > 0)
                 rv |= StepDownEnabled;
-            if(val < KredsUnits::maxMoney())
+            if(val < BitcoinUnits::maxMoney())
                 rv |= StepUpEnabled;
         }
         return rv;
@@ -188,9 +188,9 @@ Q_SIGNALS:
     void valueChanged();
 };
 
-#include "kredsamountfield.moc"
+#include "bitcoinamountfield.moc"
 
-KredsAmountField::KredsAmountField(QWidget *parent) :
+BitcoinAmountField::BitcoinAmountField(QWidget *parent) :
     QWidget(parent),
     amount(0)
 {
@@ -202,7 +202,7 @@ KredsAmountField::KredsAmountField(QWidget *parent) :
     QHBoxLayout *layout = new QHBoxLayout(this);
     layout->addWidget(amount);
     unit = new QValueComboBox(this);
-    unit->setModel(new KredsUnits(this));
+    unit->setModel(new BitcoinUnits(this));
     layout->addWidget(unit);
     layout->addStretch(1);
     layout->setContentsMargins(0,0,0,0);
@@ -220,19 +220,19 @@ KredsAmountField::KredsAmountField(QWidget *parent) :
     unitChanged(unit->currentIndex());
 }
 
-void KredsAmountField::clear()
+void BitcoinAmountField::clear()
 {
     amount->clear();
     unit->setCurrentIndex(0);
 }
 
-void KredsAmountField::setEnabled(bool fEnabled)
+void BitcoinAmountField::setEnabled(bool fEnabled)
 {
     amount->setEnabled(fEnabled);
     unit->setEnabled(fEnabled);
 }
 
-bool KredsAmountField::validate()
+bool BitcoinAmountField::validate()
 {
     bool valid = false;
     value(&valid);
@@ -240,7 +240,7 @@ bool KredsAmountField::validate()
     return valid;
 }
 
-void KredsAmountField::setValid(bool valid)
+void BitcoinAmountField::setValid(bool valid)
 {
     if (valid)
         amount->setStyleSheet("");
@@ -248,7 +248,7 @@ void KredsAmountField::setValid(bool valid)
         amount->setStyleSheet(STYLE_INVALID);
 }
 
-bool KredsAmountField::eventFilter(QObject *object, QEvent *event)
+bool BitcoinAmountField::eventFilter(QObject *object, QEvent *event)
 {
     if (event->type() == QEvent::FocusIn)
     {
@@ -258,45 +258,45 @@ bool KredsAmountField::eventFilter(QObject *object, QEvent *event)
     return QWidget::eventFilter(object, event);
 }
 
-QWidget *KredsAmountField::setupTabChain(QWidget *prev)
+QWidget *BitcoinAmountField::setupTabChain(QWidget *prev)
 {
     QWidget::setTabOrder(prev, amount);
     QWidget::setTabOrder(amount, unit);
     return unit;
 }
 
-CAmount KredsAmountField::value(bool *valid_out) const
+CAmount BitcoinAmountField::value(bool *valid_out) const
 {
     return amount->value(valid_out);
 }
 
-void KredsAmountField::setValue(const CAmount& value)
+void BitcoinAmountField::setValue(const CAmount& value)
 {
     amount->setValue(value);
 }
 
-void KredsAmountField::setReadOnly(bool fReadOnly)
+void BitcoinAmountField::setReadOnly(bool fReadOnly)
 {
     amount->setReadOnly(fReadOnly);
 }
 
-void KredsAmountField::unitChanged(int idx)
+void BitcoinAmountField::unitChanged(int idx)
 {
     // Use description tooltip for current unit for the combobox
     unit->setToolTip(unit->itemData(idx, Qt::ToolTipRole).toString());
 
     // Determine new unit ID
-    int newUnit = unit->itemData(idx, KredsUnits::UnitRole).toInt();
+    int newUnit = unit->itemData(idx, BitcoinUnits::UnitRole).toInt();
 
     amount->setDisplayUnit(newUnit);
 }
 
-void KredsAmountField::setDisplayUnit(int newUnit)
+void BitcoinAmountField::setDisplayUnit(int newUnit)
 {
     unit->setValue(newUnit);
 }
 
-void KredsAmountField::setSingleStep(const CAmount& step)
+void BitcoinAmountField::setSingleStep(const CAmount& step)
 {
     amount->setSingleStep(step);
 }
