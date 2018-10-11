@@ -24,7 +24,7 @@ public:
     {
         destChange = CNoDestination();
         setSelected.clear();
-        useInstantX = false;
+        useInstantX = true;
         useDarkSend = true;
     }
 
