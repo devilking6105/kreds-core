@@ -1,17 +1,20 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "guiutil.h"
 
-#include "kredsaddressvalidator.h"
-#include "kredsunits.h"
+#include "bitcoinaddressvalidator.h"
+#include "bitcoinunits.h"
 #include "qvalidatedlineedit.h"
 #include "walletmodel.h"
 
 #include "primitives/transaction.h"
 #include "init.h"
-#include "policy/policy.h"
+#include "main.h" // For minRelayTxFee
 #include "protocol.h"
 #include "script/script.h"
 #include "script/standard.h"
@@ -55,7 +58,6 @@
 #include <QSettings>
 #include <QTextDocument> // for Qt::mightBeRichText
 #include <QThread>
-#include <QMouseEvent>
 
 #if QT_VERSION < 0x050000
 #include <QUrl>
@@ -108,23 +110,6 @@ QFont fixedPitchFont()
 #endif
 }
 
-// Just some dummy data to generate an convincing random-looking (but consistent) address
-static const uint8_t dummydata[] = {0xeb,0x15,0x23,0x1d,0xfc,0xeb,0x60,0x92,0x58,0x86,0xb6,0x7d,0x06,0x52,0x99,0x92,0x59,0x15,0xae,0xb1,0x72,0xc0,0x66,0x47};
-
-// Generate a dummy address with invalid CRC, starting with the network prefix.
-static std::string DummyAddress(const CChainParams &params)
-{
-    std::vector<unsigned char> sourcedata = params.Base58Prefix(CChainParams::PUBKEY_ADDRESS);
-    sourcedata.insert(sourcedata.end(), dummydata, dummydata + sizeof(dummydata));
-    for(int i=0; i<256; ++i) { // Try every trailing byte
-        std::string s = EncodeBase58(sourcedata.data(), sourcedata.data() + sourcedata.size());
-        if (!CKredsAddress(s).IsValid())
-            return s;
-        sourcedata[sourcedata.size()-1] += 1;
-    }
-    return "";
-}
-
 void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent)
 {
     parent->setFocusProxy(widget);
@@ -133,11 +118,10 @@ void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent)
 #if QT_VERSION >= 0x040700
     // We don't want translators to use own addresses in translations
     // and this is the only place, where this address is supplied.
-    widget->setPlaceholderText(QObject::tr("Enter a Kreds address (e.g. %1)").arg(
-        QString::fromStdString(DummyAddress(Params()))));
+    widget->setPlaceholderText(QObject::tr("Enter a HTH address (e.g. %1)").arg("XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg"));
 #endif
-    widget->setValidator(new KredsAddressEntryValidator(parent));
-    widget->setCheckValidator(new KredsAddressCheckValidator(parent));
+    widget->setValidator(new BitcoinAddressEntryValidator(parent));
+    widget->setCheckValidator(new BitcoinAddressCheckValidator(parent));
 }
 
 void setupAmountWidget(QLineEdit *widget, QWidget *parent)
@@ -149,10 +133,10 @@ void setupAmountWidget(QLineEdit *widget, QWidget *parent)
     widget->setAlignment(Qt::AlignRight|Qt::AlignVCenter);
 }
 
-bool parseKredsURI(const QUrl &uri, SendCoinsRecipient *out)
+bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
 {
-    // return if URI is not valid or is no kreds: URI
-    if(!uri.isValid() || uri.scheme() != QString("kreds"))
+    // return if URI is not valid or is no hth: URI
+    if(!uri.isValid() || uri.scheme() != QString("hth"))
         return false;
 
     SendCoinsRecipient rv;
@@ -169,6 +153,8 @@ bool parseKredsURI(const QUrl &uri, SendCoinsRecipient *out)
     QUrlQuery uriQuery(uri);
     QList<QPair<QString, QString> > items = uriQuery.queryItems();
 #endif
+    
+    rv.fUseInstantSend = false;
     for (QList<QPair<QString, QString> >::iterator i = items.begin(); i != items.end(); i++)
     {
         bool fShouldReturnFalse = false;
@@ -183,6 +169,13 @@ bool parseKredsURI(const QUrl &uri, SendCoinsRecipient *out)
             rv.label = i->second;
             fShouldReturnFalse = false;
         }
+        if (i->first == "IS")
+        {
+            if(i->second.compare(QString("1")) == 0)
+                rv.fUseInstantSend = true;
+
+            fShouldReturnFalse = false;
+        }
         if (i->first == "message")
         {
             rv.message = i->second;
@@ -192,7 +185,7 @@ bool parseKredsURI(const QUrl &uri, SendCoinsRecipient *out)
         {
             if(!i->second.isEmpty())
             {
-                if(!KredsUnits::parse(KredsUnits::KREDS, i->second, &rv.amount))
+                if(!BitcoinUnits::parse(BitcoinUnits::HTH, i->second, &rv.amount))
                 {
                     return false;
                 }
@@ -210,28 +203,28 @@ bool parseKredsURI(const QUrl &uri, SendCoinsRecipient *out)
     return true;
 }
 
-bool parseKredsURI(QString uri, SendCoinsRecipient *out)
+bool parseBitcoinURI(QString uri, SendCoinsRecipient *out)
 {
-    // Convert kreds:// to kreds:
+    // Convert hth:// to hth:
     //
-    //    Cannot handle this later, because kreds:// will cause Qt to see the part after // as host,
+    //    Cannot handle this later, because hth:// will cause Qt to see the part after // as host,
     //    which will lower-case it (and thus invalidate the address).
-    if(uri.startsWith("kreds://", Qt::CaseInsensitive))
+    if(uri.startsWith("hth://", Qt::CaseInsensitive))
     {
-        uri.replace(0, 10, "kreds:");
+        uri.replace(0, 7, "hth:");
     }
     QUrl uriInstance(uri);
-    return parseKredsURI(uriInstance, out);
+    return parseBitcoinURI(uriInstance, out);
 }
 
-QString formatKredsURI(const SendCoinsRecipient &info)
+QString formatBitcoinURI(const SendCoinsRecipient &info)
 {
-    QString ret = QString("kreds:%1").arg(info.address);
+    QString ret = QString("hth:%1").arg(info.address);
     int paramCount = 0;
 
     if (info.amount)
     {
-        ret += QString("?amount=%1").arg(KredsUnits::format(KredsUnits::KREDS, info.amount, false, KredsUnits::separatorNever));
+        ret += QString("?amount=%1").arg(BitcoinUnits::format(BitcoinUnits::HTH, info.amount, false, BitcoinUnits::separatorNever));
         paramCount++;
     }
 
@@ -244,8 +237,14 @@ QString formatKredsURI(const SendCoinsRecipient &info)
 
     if (!info.message.isEmpty())
     {
-        QString msg(QUrl::toPercentEncoding(info.message));
+        QString msg(QUrl::toPercentEncoding(info.message));;
         ret += QString("%1message=%2").arg(paramCount == 0 ? "?" : "&").arg(msg);
+        paramCount++;
+    }
+    
+    if(info.fUseInstantSend)
+    {
+        ret += QString("%1IS=1").arg(paramCount == 0 ? "?" : "&");
         paramCount++;
     }
 
@@ -254,10 +253,10 @@ QString formatKredsURI(const SendCoinsRecipient &info)
 
 bool isDust(const QString& address, const CAmount& amount)
 {
-    CTxDestination dest = CKredsAddress(address.toStdString()).Get();
+    CTxDestination dest = CBitcoinAddress(address.toStdString()).Get();
     CScript script = GetScriptForDestination(dest);
     CTxOut txOut(amount, script);
-    return txOut.IsDust(dustRelayFee);
+    return txOut.IsDust(::minRelayTxFee);
 }
 
 QString HtmlEscape(const QString& str, bool fMultiLine)
@@ -267,6 +266,7 @@ QString HtmlEscape(const QString& str, bool fMultiLine)
 #else
     QString escaped = str.toHtmlEscaped();
 #endif
+    escaped = escaped.replace(" ", "&nbsp;");
     if(fMultiLine)
     {
         escaped = escaped.replace("\n", "<br>\n");
@@ -292,11 +292,17 @@ void copyEntryData(QAbstractItemView *view, int column, int role)
     }
 }
 
-QList<QModelIndex> getEntryData(QAbstractItemView *view, int column)
+QString getEntryData(QAbstractItemView *view, int column, int role)
 {
     if(!view || !view->selectionModel())
-        return QList<QModelIndex>();
-    return view->selectionModel()->selectedRows(column);
+        return QString();
+    QModelIndexList selection = view->selectionModel()->selectedRows(column);
+
+    if(!selection.isEmpty()) {
+        // Return first item
+        return (selection.at(0).data(role).toString());
+    }
+    return QString();
 }
 
 QString getSaveFileName(QWidget *parent, const QString &caption, const QString &dir,
@@ -421,31 +427,31 @@ void openDebugLogfile()
         QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathDebug)));
 }
 
+void openConfigfile()
+{
+    boost::filesystem::path pathConfig = GetConfigFile();
+
+    /* Open hth.conf with the associated application */
+    if (boost::filesystem::exists(pathConfig))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathConfig)));
+}
+
+void openMNConfigfile()
+{
+    boost::filesystem::path pathConfig = GetMasternodeConfigFile();
+
+    /* Open masternode.conf with the associated application */
+    if (boost::filesystem::exists(pathConfig))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathConfig)));
+}
+
 void showBackups()
 {
-    boost::filesystem::path pathBackups = GetDataDir() / "backups";
+    boost::filesystem::path backupsDir = GetBackupsDir();
 
     /* Open folder with default browser */
-    if (boost::filesystem::exists(pathBackups))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathBackups)));
-}
-
-void showConf()
-{
-    boost::filesystem::path pathBackups = GetDataDir() / "masternode.conf";
-
-    /* Open folder with default browser */
-    if (boost::filesystem::exists(pathBackups))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathBackups)));
-}
-
-void showKredsConf()
-{
-    boost::filesystem::path pathBackups = GetDataDir() / "kreds.conf";
-
-    /* Open folder with default browser */
-    if (boost::filesystem::exists(pathBackups))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathBackups)));
+    if (boost::filesystem::exists(backupsDir))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(backupsDir)));
 }
 
 void SubstituteFonts(const QString& language)
@@ -484,9 +490,9 @@ void SubstituteFonts(const QString& language)
 #endif
 }
 
-ToolTipToRichTextFilter::ToolTipToRichTextFilter(int _size_threshold, QObject *parent) :
+ToolTipToRichTextFilter::ToolTipToRichTextFilter(int size_threshold, QObject *parent) :
     QObject(parent),
-    size_threshold(_size_threshold)
+    size_threshold(size_threshold)
 {
 
 }
@@ -497,11 +503,14 @@ bool ToolTipToRichTextFilter::eventFilter(QObject *obj, QEvent *evt)
     {
         QWidget *widget = static_cast<QWidget*>(obj);
         QString tooltip = widget->toolTip();
-        if(tooltip.size() > size_threshold && !tooltip.startsWith("<qt") && !Qt::mightBeRichText(tooltip))
+        if(tooltip.size() > size_threshold && !tooltip.startsWith("<qt"))
         {
-            // Envelop with <qt></qt> to make sure Qt detects this as rich text
-            // Escape the current message as HTML and replace \n by <br>
-            tooltip = "<qt>" + HtmlEscape(tooltip, true) + "</qt>";
+            // Escape the current message as HTML and replace \n by <br> if it's not rich text
+            if(!Qt::mightBeRichText(tooltip))
+                tooltip = HtmlEscape(tooltip, true);
+            // Envelop with <qt></qt> to make sure Qt detects every tooltip as rich text
+            // and style='white-space:pre' to preserve line composition
+            tooltip = "<qt style='white-space:pre'>" + tooltip + "</qt>";
             widget->setToolTip(tooltip);
             return true;
         }
@@ -563,7 +572,7 @@ int TableViewLastColumnResizingFixer::getAvailableWidthForColumn(int column)
     return nResult;
 }
 
-// Make sure we don't make the columns wider than the table's viewport width.
+// Make sure we don't make the columns wider than the tables viewport width.
 void TableViewLastColumnResizingFixer::adjustTableColumnsWidth()
 {
     disconnectViewHeadersSignals();
@@ -597,7 +606,7 @@ void TableViewLastColumnResizingFixer::on_sectionResized(int logicalIndex, int o
     }
 }
 
-// When the table's geometry is ready, we manually perform the stretch of the "Message" column,
+// When the tabless geometry is ready, we manually perform the stretch of the "Message" column,
 // as the "Stretch" resize mode does not allow for interactive resizing.
 void TableViewLastColumnResizingFixer::on_geometriesChanged()
 {
@@ -613,8 +622,7 @@ void TableViewLastColumnResizingFixer::on_geometriesChanged()
  * Initializes all internal variables and prepares the
  * the resize modes of the last 2 columns of the table and
  */
-TableViewLastColumnResizingFixer::TableViewLastColumnResizingFixer(QTableView* table, int lastColMinimumWidth, int allColsMinimumWidth, QObject *parent) :
-    QObject(parent),
+TableViewLastColumnResizingFixer::TableViewLastColumnResizingFixer(QTableView* table, int lastColMinimumWidth, int allColsMinimumWidth) :
     tableView(table),
     lastColumnMinimumWidth(lastColMinimumWidth),
     allColumnsMinimumWidth(allColsMinimumWidth)
@@ -632,15 +640,15 @@ boost::filesystem::path static StartupShortcutPath()
 {
     std::string chain = ChainNameFromCommandLine();
     if (chain == CBaseChainParams::MAIN)
-        return GetSpecialFolderPath(CSIDL_STARTUP) / "Kreds.lnk";
+        return GetSpecialFolderPath(CSIDL_STARTUP) / "HTH.lnk";
     if (chain == CBaseChainParams::TESTNET) // Remove this special case when CBaseChainParams::TESTNET = "testnet4"
-        return GetSpecialFolderPath(CSIDL_STARTUP) / "Kreds (testnet).lnk";
-    return GetSpecialFolderPath(CSIDL_STARTUP) / strprintf("Kreds (%s).lnk", chain);
+        return GetSpecialFolderPath(CSIDL_STARTUP) / "HTH (testnet).lnk";
+    return GetSpecialFolderPath(CSIDL_STARTUP) / strprintf("HTH (%s).lnk", chain);
 }
 
 bool GetStartOnSystemStartup()
 {
-    // check for Kreds*.lnk
+    // check for HTH*.lnk
     return boost::filesystem::exists(StartupShortcutPath());
 }
 
@@ -732,8 +740,8 @@ boost::filesystem::path static GetAutostartFilePath()
 {
     std::string chain = ChainNameFromCommandLine();
     if (chain == CBaseChainParams::MAIN)
-        return GetAutostartDir() / "kreds.desktop";
-    return GetAutostartDir() / strprintf("kreds-%s.lnk", chain);
+        return GetAutostartDir() / "hth.desktop";
+    return GetAutostartDir() / strprintf("hth-%s.lnk", chain);
 }
 
 bool GetStartOnSystemStartup()
@@ -772,13 +780,13 @@ bool SetStartOnSystemStartup(bool fAutoStart)
         if (!optionFile.good())
             return false;
         std::string chain = ChainNameFromCommandLine();
-        // Write a kreds.desktop file to the autostart directory:
+        // Write a hth.desktop file to the autostart directory:
         optionFile << "[Desktop Entry]\n";
         optionFile << "Type=Application\n";
         if (chain == CBaseChainParams::MAIN)
-            optionFile << "Name=Kreds\n";
+            optionFile << "Name=HTH\n";
         else
-            optionFile << strprintf("Name=Kreds (%s)\n", chain);
+            optionFile << strprintf("Name=Bitcoin (%s)\n", chain);
         optionFile << "Exec=" << pszExePath << strprintf(" -min -testnet=%d -regtest=%d\n", GetBoolArg("-testnet", false), GetBoolArg("-regtest", false));
         optionFile << "Terminal=false\n";
         optionFile << "Hidden=false\n";
@@ -789,8 +797,6 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 
 
 #elif defined(Q_OS_MAC)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 // based on: https://github.com/Mozketo/LaunchAtLoginController/blob/master/LaunchAtLoginController.m
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -799,7 +805,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 LSSharedFileListItemRef findStartupItemInList(LSSharedFileListRef list, CFURLRef findUrl);
 LSSharedFileListItemRef findStartupItemInList(LSSharedFileListRef list, CFURLRef findUrl)
 {
-    // loop through the list of startup items and try to find the kreds app
+    // loop through the list of startup items and try to find the HTH Core app
     CFArrayRef listSnapshot = LSSharedFileListCopySnapshot(list, NULL);
     for(int i = 0; i < CFArrayGetCount(listSnapshot); i++) {
         LSSharedFileListItemRef item = (LSSharedFileListItemRef)CFArrayGetValueAtIndex(listSnapshot, i);
@@ -831,21 +837,21 @@ LSSharedFileListItemRef findStartupItemInList(LSSharedFileListRef list, CFURLRef
 
 bool GetStartOnSystemStartup()
 {
-    CFURLRef kredsAppUrl = CFBundleCopyBundleURL(CFBundleGetMainBundle());
+    CFURLRef bitcoinAppUrl = CFBundleCopyBundleURL(CFBundleGetMainBundle());
     LSSharedFileListRef loginItems = LSSharedFileListCreate(NULL, kLSSharedFileListSessionLoginItems, NULL);
-    LSSharedFileListItemRef foundItem = findStartupItemInList(loginItems, kredsAppUrl);
+    LSSharedFileListItemRef foundItem = findStartupItemInList(loginItems, bitcoinAppUrl);
     return !!foundItem; // return boolified object
 }
 
 bool SetStartOnSystemStartup(bool fAutoStart)
 {
-    CFURLRef kredsAppUrl = CFBundleCopyBundleURL(CFBundleGetMainBundle());
+    CFURLRef bitcoinAppUrl = CFBundleCopyBundleURL(CFBundleGetMainBundle());
     LSSharedFileListRef loginItems = LSSharedFileListCreate(NULL, kLSSharedFileListSessionLoginItems, NULL);
-    LSSharedFileListItemRef foundItem = findStartupItemInList(loginItems, kredsAppUrl);
+    LSSharedFileListItemRef foundItem = findStartupItemInList(loginItems, bitcoinAppUrl);
 
     if(fAutoStart && !foundItem) {
-        // add kreds app to startup item list
-        LSSharedFileListInsertItemURL(loginItems, kLSSharedFileListItemBeforeFirst, NULL, NULL, kredsAppUrl, NULL, NULL);
+        // add HTH Core app to startup item list
+        LSSharedFileListInsertItemURL(loginItems, kLSSharedFileListItemBeforeFirst, NULL, NULL, bitcoinAppUrl, NULL, NULL);
     }
     else if(!fAutoStart && foundItem) {
         // remove item
@@ -853,13 +859,24 @@ bool SetStartOnSystemStartup(bool fAutoStart)
     }
     return true;
 }
-#pragma GCC diagnostic pop
 #else
 
 bool GetStartOnSystemStartup() { return false; }
 bool SetStartOnSystemStartup(bool fAutoStart) { return false; }
 
 #endif
+
+void migrateQtSettings()
+{
+    // Migration (12.1)
+    QSettings settings;
+    if(!settings.value("fMigrationDone121", false).toBool()) {
+        settings.remove("theme");
+        settings.remove("nWindowPos");
+        settings.remove("nWindowSize");
+        settings.setValue("fMigrationDone121", true);
+    }
+}
 
 void saveWindowGeometry(const QString& strSetting, QWidget *parent)
 {
@@ -883,6 +900,19 @@ void restoreWindowGeometry(const QString& strSetting, const QSize& defaultSize, 
     parent->resize(size);
     parent->move(pos);
 }
+
+// Return name of current UI-theme or default theme if no theme was found
+QString getThemeName()
+{
+    QSettings settings;
+    QString theme = settings.value("theme", "").toString();
+
+    if(!theme.isEmpty()){
+        return theme;
+    }
+    return QString("light");  
+}
+
 // Open CSS when configured
 QString loadStyleSheet()
 {
@@ -895,8 +925,8 @@ QString loadStyleSheet()
         cssName = QString(":/css/") + theme; 
     }
     else {
-        cssName = QString(":/css/kreds_main");  
-        settings.setValue("theme", "kreds_main");
+        cssName = QString(":/css/light");  
+        settings.setValue("theme", "light");
     }
     
     QFile qFile(cssName);      
@@ -906,6 +936,7 @@ QString loadStyleSheet()
         
     return styleSheet;
 }
+
 void setClipboard(const QString& str)
 {
     QApplication::clipboard()->setText(str, QClipboard::Clipboard);
@@ -975,12 +1006,6 @@ QString formatServicesStr(quint64 mask)
             case NODE_BLOOM:
                 strList.append("BLOOM");
                 break;
-            case NODE_WITNESS:
-                strList.append("WITNESS");
-                break;
-            case NODE_XTHIN:
-                strList.append("XTHIN");
-                break;
             default:
                 strList.append(QString("%1[%2]").arg("UNKNOWN").arg(check));
             }
@@ -995,59 +1020,12 @@ QString formatServicesStr(quint64 mask)
 
 QString formatPingTime(double dPingTime)
 {
-    return (dPingTime == std::numeric_limits<int64_t>::max()/1e6 || dPingTime == 0) ? QObject::tr("N/A") : QString(QObject::tr("%1 ms")).arg(QString::number((int)(dPingTime * 1000), 10));
+    return dPingTime == 0 ? QObject::tr("N/A") : QString(QObject::tr("%1 ms")).arg(QString::number((int)(dPingTime * 1000), 10));
 }
 
 QString formatTimeOffset(int64_t nTimeOffset)
 {
   return QString(QObject::tr("%1 s")).arg(QString::number((int)nTimeOffset, 10));
-}
-
-QString formatNiceTimeOffset(qint64 secs)
-{
-    // Represent time from last generated block in human readable text
-    QString timeBehindText;
-    const int HOUR_IN_SECONDS = 60*60;
-    const int DAY_IN_SECONDS = 24*60*60;
-    const int WEEK_IN_SECONDS = 7*24*60*60;
-    const int YEAR_IN_SECONDS = 31556952; // Average length of year in Gregorian calendar
-    if(secs < 60)
-    {
-        timeBehindText = QObject::tr("%n second(s)","",secs);
-    }
-    else if(secs < 2*HOUR_IN_SECONDS)
-    {
-        timeBehindText = QObject::tr("%n minute(s)","",secs/60);
-    }
-    else if(secs < 2*DAY_IN_SECONDS)
-    {
-        timeBehindText = QObject::tr("%n hour(s)","",secs/HOUR_IN_SECONDS);
-    }
-    else if(secs < 2*WEEK_IN_SECONDS)
-    {
-        timeBehindText = QObject::tr("%n day(s)","",secs/DAY_IN_SECONDS);
-    }
-    else if(secs < YEAR_IN_SECONDS)
-    {
-        timeBehindText = QObject::tr("%n week(s)","",secs/WEEK_IN_SECONDS);
-    }
-    else
-    {
-        qint64 years = secs / YEAR_IN_SECONDS;
-        qint64 remainder = secs % YEAR_IN_SECONDS;
-        timeBehindText = QObject::tr("%1 and %2").arg(QObject::tr("%n year(s)", "", years)).arg(QObject::tr("%n week(s)","", remainder/WEEK_IN_SECONDS));
-    }
-    return timeBehindText;
-}
-
-void ClickableLabel::mouseReleaseEvent(QMouseEvent *event)
-{
-    Q_EMIT clicked(event->pos());
-}
-    
-void ClickableProgressBar::mouseReleaseEvent(QMouseEvent *event)
-{
-    Q_EMIT clicked(event->pos());
 }
 
 } // namespace GUIUtil
