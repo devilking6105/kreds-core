@@ -8,7 +8,7 @@
 #include <string>
 
 // Name of client reported in the 'version' message. Report the same name
-// for both kredsd and kreds-qt, to make it harder for attackers to
+// for both hthd and hth-qt, to make it harder for attackers to
 // target servers or GUI users specifically.
 const std::string CLIENT_NAME("BSD Core");
 
