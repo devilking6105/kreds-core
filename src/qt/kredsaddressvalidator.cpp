@@ -88,7 +88,7 @@ KredsAddressCheckValidator::KredsAddressCheckValidator(QObject *parent) :
 QValidator::State KredsAddressCheckValidator::validate(QString &input, int &pos) const
 {
     Q_UNUSED(pos);
-    // Validate the passed Kreds address
+    // Validate the passed HTH address
     CKredsAddress addr(input.toStdString());
     if (addr.IsValid())
         return QValidator::Acceptable;
