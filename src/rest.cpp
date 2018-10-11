@@ -9,7 +9,6 @@
 #include "chainparams.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
-#include "validation.h"
 #include "httpserver.h"
 #include "rpc/server.h"
 #include "streams.h"
