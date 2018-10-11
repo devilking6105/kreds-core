@@ -13,7 +13,7 @@
  * for both kredsd and kreds-core, to make it harder for attackers to
  * target servers or GUI users specifically.
  */
-const std::string CLIENT_NAME("Kreds");
+const std::string CLIENT_NAME("HTH Core");
 
 /**
  * Client version number
