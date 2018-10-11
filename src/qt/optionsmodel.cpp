@@ -1,27 +1,33 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include "config/kreds-config.h"
+#include "config/hth-config.h"
 #endif
 
 #include "optionsmodel.h"
 
-#include "kredsunits.h"
+#include "bitcoinunits.h"
 #include "guiutil.h"
 
 #include "amount.h"
 #include "init.h"
-#include "validation.h" // For DEFAULT_SCRIPTCHECK_THREADS
+#include "main.h" // For DEFAULT_SCRIPTCHECK_THREADS
 #include "net.h"
-#include "netbase.h"
 #include "txdb.h" // for -dbcache defaults
-#include "intro.h" 
 
 #ifdef ENABLE_WALLET
 #include "wallet/wallet.h"
 #include "wallet/walletdb.h"
+#endif
+
+#include "darksend.h"
+#ifdef ENABLE_WALLET
+#include "masternodeconfig.h"
 #endif
 
 #include <QNetworkProxy>
@@ -36,7 +42,7 @@ OptionsModel::OptionsModel(QObject *parent, bool resetSettings) :
 
 void OptionsModel::addOverriddenOption(const std::string &option)
 {
-    strOverriddenByCommandLine += QString::fromStdString(option) + "=" + QString::fromStdString(GetArg(option, "")) + " ";
+    strOverriddenByCommandLine += QString::fromStdString(option) + "=" + QString::fromStdString(mapArgs[option]) + " ";
 }
 
 // Writes all missing QSettings with their default values
@@ -45,7 +51,7 @@ void OptionsModel::Init(bool resetSettings)
     if (resetSettings)
         Reset();
 
-    checkAndMigrate();
+    this->resetSettings = resetSettings;
 
     QSettings settings;
 
@@ -55,14 +61,9 @@ void OptionsModel::Init(bool resetSettings)
     // These are Qt-only settings:
 
     // Window
-    if (!settings.contains("fHideTrayIcon"))
-        settings.setValue("fHideTrayIcon", false);
-    fHideTrayIcon = settings.value("fHideTrayIcon").toBool();
-    Q_EMIT hideTrayIconChanged(fHideTrayIcon);
-    
     if (!settings.contains("fMinimizeToTray"))
         settings.setValue("fMinimizeToTray", false);
-    fMinimizeToTray = settings.value("fMinimizeToTray").toBool() && !fHideTrayIcon;
+    fMinimizeToTray = settings.value("fMinimizeToTray").toBool();
 
     if (!settings.contains("fMinimizeOnClose"))
         settings.setValue("fMinimizeOnClose", false);
@@ -70,7 +71,7 @@ void OptionsModel::Init(bool resetSettings)
 
     // Display
     if (!settings.contains("nDisplayUnit"))
-        settings.setValue("nDisplayUnit", KredsUnits::KREDS);
+        settings.setValue("nDisplayUnit", BitcoinUnits::HTH);
     nDisplayUnit = settings.value("nDisplayUnit").toInt();
 
     if (!settings.contains("strThirdPartyTxUrls"))
@@ -80,6 +81,21 @@ void OptionsModel::Init(bool resetSettings)
     if (!settings.contains("fCoinControlFeatures"))
         settings.setValue("fCoinControlFeatures", false);
     fCoinControlFeatures = settings.value("fCoinControlFeatures", false).toBool();
+
+    if (!settings.contains("digits"))
+        settings.setValue("digits", "2");
+    if (!settings.contains("theme"))
+        settings.setValue("theme", "");
+
+    if (!settings.contains("fShowMasternodesTab"))
+        settings.setValue("fShowMasternodesTab", masternodeConfig.getCount());
+
+    if (!settings.contains("fShowAdvancedPSUI"))
+        settings.setValue("fShowAdvancedPSUI", false);
+    fShowAdvancedPSUI = settings.value("fShowAdvancedPSUI", false).toBool();
+
+    if (!settings.contains("fLowKeysWarning"))
+        settings.setValue("fLowKeysWarning", true);
 
     // These are shared with the core or have a command-line parameter
     // and we want command-line parameters to overwrite the GUI settings.
@@ -100,15 +116,36 @@ void OptionsModel::Init(bool resetSettings)
     if (!SoftSetArg("-par", settings.value("nThreadsScriptVerif").toString().toStdString()))
         addOverriddenOption("-par");
 
-    if (!settings.contains("strDataDir"))
-        settings.setValue("strDataDir", Intro::getDefaultDataDirectory());
-
     // Wallet
 #ifdef ENABLE_WALLET
     if (!settings.contains("bSpendZeroConfChange"))
         settings.setValue("bSpendZeroConfChange", true);
     if (!SoftSetBoolArg("-spendzeroconfchange", settings.value("bSpendZeroConfChange").toBool()))
         addOverriddenOption("-spendzeroconfchange");
+
+    // PrivateSend
+    if (!settings.contains("nPrivateSendRounds"))
+        settings.setValue("nPrivateSendRounds", DEFAULT_PRIVATESEND_ROUNDS);
+    if (!SoftSetArg("-privatesendrounds", settings.value("nPrivateSendRounds").toString().toStdString()))
+        addOverriddenOption("-privatesendrounds");
+    nPrivateSendRounds = settings.value("nPrivateSendRounds").toInt();
+
+    if (!settings.contains("nPrivateSendAmount")) {
+        // for migration from old settings
+        if (!settings.contains("nAnonymizeHTHAmount"))
+            settings.setValue("nPrivateSendAmount", DEFAULT_PRIVATESEND_AMOUNT);
+        else
+            settings.setValue("nPrivateSendAmount", settings.value("nAnonymizeHTHAmount").toInt());
+    }
+    if (!SoftSetArg("-privatesendamount", settings.value("nPrivateSendAmount").toString().toStdString()))
+        addOverriddenOption("-privatesendamount");
+    nPrivateSendAmount = settings.value("nPrivateSendAmount").toInt();
+
+    if (!settings.contains("fPrivateSendMultiSession"))
+        settings.setValue("fPrivateSendMultiSession", DEFAULT_PRIVATESEND_MULTISESSION);
+    if (!SoftSetBoolArg("-privatesendmultisession", settings.value("fPrivateSendMultiSession").toBool()))
+        addOverriddenOption("-privatesendmultisession");
+    fPrivateSendMultiSession = settings.value("fPrivateSendMultiSession").toBool();
 #endif
 
     // Network
@@ -143,8 +180,6 @@ void OptionsModel::Init(bool resetSettings)
         addOverriddenOption("-onion");
 
     // Display
-	if (!settings.contains("theme"))
-        settings.setValue("theme", "");
     if (!settings.contains("language"))
         settings.setValue("language", "");
     if (!SoftSetArg("-lang", settings.value("language").toString().toStdString()))
@@ -157,18 +192,9 @@ void OptionsModel::Reset()
 {
     QSettings settings;
 
-    // Save the strDataDir setting
-    QString dataDir = Intro::getDefaultDataDirectory();
-    dataDir = settings.value("strDataDir", dataDir).toString();
-
     // Remove all entries from our QSettings object
     settings.clear();
-
-    // Set strDataDir
-    settings.setValue("strDataDir", dataDir);
-
-    // Set that this was reset
-    settings.setValue("fReset", true);
+    resetSettings = true; // Needed in hth.cpp during shotdown to also remove the window positions
 
     // default setting for OptionsModel::StartAtStartup - disabled
     if (GUIUtil::GetStartOnSystemStartup())
@@ -190,8 +216,6 @@ QVariant OptionsModel::data(const QModelIndex & index, int role) const
         {
         case StartAtStartup:
             return GUIUtil::GetStartOnSystemStartup();
-        case HideTrayIcon:
-            return fHideTrayIcon;
         case MinimizeToTray:
             return fMinimizeToTray;
         case MapPortUPnP:
@@ -234,13 +258,27 @@ QVariant OptionsModel::data(const QModelIndex & index, int role) const
 #ifdef ENABLE_WALLET
         case SpendZeroConfChange:
             return settings.value("bSpendZeroConfChange");
+        case ShowMasternodesTab:
+            return settings.value("fShowMasternodesTab");
+        case ShowAdvancedPSUI:
+            return fShowAdvancedPSUI;
+        case LowKeysWarning:
+            return settings.value("fLowKeysWarning");
+        case PrivateSendRounds:
+            return settings.value("nPrivateSendRounds");
+        case PrivateSendAmount:
+            return settings.value("nPrivateSendAmount");
+        case PrivateSendMultiSession:
+            return settings.value("fPrivateSendMultiSession");
 #endif
         case DisplayUnit:
             return nDisplayUnit;
         case ThirdPartyTxUrls:
             return strThirdPartyTxUrls;
-		case Theme:
-            return settings.value("theme");  
+        case Digits:
+            return settings.value("digits");
+        case Theme:
+            return settings.value("theme");
         case Language:
             return settings.value("language");
         case CoinControlFeatures:
@@ -269,11 +307,6 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
         {
         case StartAtStartup:
             successful = GUIUtil::SetStartOnSystemStartup(value.toBool());
-            break;
-        case HideTrayIcon:
-            fHideTrayIcon = value.toBool();
-            settings.setValue("fHideTrayIcon", fHideTrayIcon);
-    		Q_EMIT hideTrayIconChanged(fHideTrayIcon);
             break;
         case MinimizeToTray:
             fMinimizeToTray = value.toBool();
@@ -359,6 +392,43 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
                 setRestartRequired(true);
             }
             break;
+        case ShowMasternodesTab:
+            if (settings.value("fShowMasternodesTab") != value) {
+                settings.setValue("fShowMasternodesTab", value);
+                setRestartRequired(true);
+            }
+            break;
+        case ShowAdvancedPSUI:
+            fShowAdvancedPSUI = value.toBool();
+            settings.setValue("fShowAdvancedPSUI", fShowAdvancedPSUI);
+            Q_EMIT advancedPSUIChanged(fShowAdvancedPSUI);
+            break;
+        case LowKeysWarning:
+            settings.setValue("fLowKeysWarning", value);
+            break;
+        case PrivateSendRounds:
+            if (settings.value("nPrivateSendRounds") != value)
+            {
+                nPrivateSendRounds = value.toInt();
+                settings.setValue("nPrivateSendRounds", nPrivateSendRounds);
+                Q_EMIT privateSendRoundsChanged();
+            }
+            break;
+        case PrivateSendAmount:
+            if (settings.value("nPrivateSendAmount") != value)
+            {
+                nPrivateSendAmount = value.toInt();
+                settings.setValue("nPrivateSendAmount", nPrivateSendAmount);
+                Q_EMIT privateSentAmountChanged();
+            }
+            break;
+        case PrivateSendMultiSession:
+            if (settings.value("fPrivateSendMultiSession") != value)
+            {
+                fPrivateSendMultiSession = value.toBool();
+                settings.setValue("fPrivateSendMultiSession", fPrivateSendMultiSession);
+            }
+            break;
 #endif
         case DisplayUnit:
             setDisplayUnit(value);
@@ -370,12 +440,18 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
                 setRestartRequired(true);
             }
             break;
-		case Theme:
+        case Digits:
+            if (settings.value("digits") != value) {
+                settings.setValue("digits", value);
+                setRestartRequired(true);
+            }
+            break;            
+        case Theme:
             if (settings.value("theme") != value) {
                 settings.setValue("theme", value);
                 setRestartRequired(true);
             }
-            break; 
+            break;            
         case Language:
             if (settings.value("language") != value) {
                 settings.setValue("language", value);
@@ -455,23 +531,4 @@ bool OptionsModel::isRestartRequired()
 {
     QSettings settings;
     return settings.value("fRestartRequired", false).toBool();
-}
-
-void OptionsModel::checkAndMigrate()
-{
-    // Migration of default values
-    // Check if the QSettings container was already loaded with this client version
-    QSettings settings;
-    static const char strSettingsVersionKey[] = "nSettingsVersion";
-    int settingsVersion = settings.contains(strSettingsVersionKey) ? settings.value(strSettingsVersionKey).toInt() : 0;
-    if (settingsVersion < CLIENT_VERSION)
-    {
-        // -dbcache was bumped from 100 to 300 in 0.13
-        // see https://github.com/kreds/kreds/pull/8273
-        // force people to upgrade to the new value if they are using 100MB
-        if (settingsVersion < 130000 && settings.contains("nDatabaseCache") && settings.value("nDatabaseCache").toLongLong() == 100)
-            settings.setValue("nDatabaseCache", (qint64)nDefaultDbCache);
-
-        settings.setValue(strSettingsVersionKey, CLIENT_VERSION);
-    }
 }
