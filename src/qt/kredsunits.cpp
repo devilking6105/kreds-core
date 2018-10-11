@@ -1,86 +1,124 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "kredsunits.h"
-
+#include "bitcoinunits.h"
+#include "chainparams.h"
 #include "primitives/transaction.h"
 
+#include <QSettings>
 #include <QStringList>
 
-KredsUnits::KredsUnits(QObject *parent):
+BitcoinUnits::BitcoinUnits(QObject *parent):
         QAbstractListModel(parent),
         unitlist(availableUnits())
 {
 }
 
-QList<KredsUnits::Unit> KredsUnits::availableUnits()
+QList<BitcoinUnits::Unit> BitcoinUnits::availableUnits()
 {
-    QList<KredsUnits::Unit> unitlist;
-    unitlist.append(KREDS);
-    unitlist.append(mKREDS);
-    unitlist.append(uKREDS);
+    QList<BitcoinUnits::Unit> unitlist;
+    unitlist.append(HTH);
+    unitlist.append(mHTH);
+    unitlist.append(uHTH);
+    unitlist.append(duffs);
     return unitlist;
 }
 
-bool KredsUnits::valid(int unit)
+bool BitcoinUnits::valid(int unit)
 {
     switch(unit)
     {
-    case KREDS:
-    case mKREDS:
-    case uKREDS:
+    case HTH:
+    case mHTH:
+    case uHTH:
+    case duffs:
         return true;
     default:
         return false;
     }
 }
 
-QString KredsUnits::name(int unit)
+QString BitcoinUnits::name(int unit)
 {
-    switch(unit)
+    if(Params().NetworkIDString() == CBaseChainParams::MAIN)
     {
-    case KREDS: return QString("KREDS");
-    case mKREDS: return QString("mKREDS");
-    case uKREDS: return QString::fromUtf8("μKREDS");
-    default: return QString("???");
+        switch(unit)
+        {
+            case HTH: return QString("HTH");
+            case mHTH: return QString("mHTH");
+            case uHTH: return QString::fromUtf8("μHTH");
+            case duffs: return QString("duffs");
+            default: return QString("???");
+        }
+    }
+    else
+    {
+        switch(unit)
+        {
+            case HTH: return QString("tHTH");
+            case mHTH: return QString("mtHTH");
+            case uHTH: return QString::fromUtf8("μtHTH");
+            case duffs: return QString("tduffs");
+            default: return QString("???");
+        }
     }
 }
 
-QString KredsUnits::description(int unit)
+QString BitcoinUnits::description(int unit)
 {
-    switch(unit)
+    if(Params().NetworkIDString() == CBaseChainParams::MAIN)
     {
-    case KREDS: return QString("Kredss");
-    case mKREDS: return QString("Milli-Kreds (1 / 1" THIN_SP_UTF8 "000)");
-    case uKREDS: return QString("Micro-Kreds (1 / 1" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)");
-    default: return QString("???");
+        switch(unit)
+        {
+            case HTH: return QString("HTH");
+            case mHTH: return QString("Milli-HTH (1 / 1" THIN_SP_UTF8 "000)");
+            case uHTH: return QString("Micro-HTH (1 / 1" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)");
+            case duffs: return QString("Ten Nano-HTH (1 / 100" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)");
+            default: return QString("???");
+        }
+    }
+    else
+    {
+        switch(unit)
+        {
+            case HTH: return QString("TestHTHs");
+            case mHTH: return QString("Milli-TestHTH (1 / 1" THIN_SP_UTF8 "000)");
+            case uHTH: return QString("Micro-TestHTH (1 / 1" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)");
+            case duffs: return QString("Ten Nano-TestHTH (1 / 100" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)");
+            default: return QString("???");
+        }
     }
 }
 
-qint64 KredsUnits::factor(int unit)
+qint64 BitcoinUnits::factor(int unit)
 {
     switch(unit)
     {
-    case KREDS:  return 100000000;
-    case mKREDS: return 100000;
-    case uKREDS: return 100;
+    case HTH:  return 100000000;
+    case mHTH: return 100000;
+    case uHTH: return 100;
+    case duffs: return 1;
     default:   return 100000000;
     }
 }
 
-int KredsUnits::decimals(int unit)
+int BitcoinUnits::decimals(int unit)
 {
     switch(unit)
     {
-    case KREDS: return 8;
-    case mKREDS: return 5;
-    case uKREDS: return 2;
+    case HTH: return 8;
+    case mHTH: return 5;
+    case uHTH: return 2;
+    case duffs: return 0;
     default: return 0;
     }
 }
 
-QString KredsUnits::format(int unit, const CAmount& nIn, bool fPlus, SeparatorStyle separators)
+QString BitcoinUnits::format(int unit, const CAmount& nIn, bool fPlus, SeparatorStyle separators)
 {
     // Note: not using straight sprintf here because we do NOT want
     // localized number formatting.
@@ -107,6 +145,10 @@ QString KredsUnits::format(int unit, const CAmount& nIn, bool fPlus, SeparatorSt
         quotient_str.insert(0, '-');
     else if (fPlus && n > 0)
         quotient_str.insert(0, '+');
+
+    if (num_decimals <= 0)
+        return quotient_str;
+
     return quotient_str + QString(".") + remainder_str;
 }
 
@@ -119,20 +161,37 @@ QString KredsUnits::format(int unit, const CAmount& nIn, bool fPlus, SeparatorSt
 // Please take care to use formatHtmlWithUnit instead, when
 // appropriate.
 
-QString KredsUnits::formatWithUnit(int unit, const CAmount& amount, bool plussign, SeparatorStyle separators)
+QString BitcoinUnits::formatWithUnit(int unit, const CAmount& amount, bool plussign, SeparatorStyle separators)
 {
     return format(unit, amount, plussign, separators) + QString(" ") + name(unit);
 }
 
-QString KredsUnits::formatHtmlWithUnit(int unit, const CAmount& amount, bool plussign, SeparatorStyle separators)
+QString BitcoinUnits::formatHtmlWithUnit(int unit, const CAmount& amount, bool plussign, SeparatorStyle separators)
 {
     QString str(formatWithUnit(unit, amount, plussign, separators));
     str.replace(QChar(THIN_SP_CP), QString(THIN_SP_HTML));
     return QString("<span style='white-space: nowrap;'>%1</span>").arg(str);
 }
 
+QString BitcoinUnits::floorWithUnit(int unit, const CAmount& amount, bool plussign, SeparatorStyle separators)
+{
+    QSettings settings;
+    int digits = settings.value("digits").toInt();
 
-bool KredsUnits::parse(int unit, const QString &value, CAmount *val_out)
+    QString result = format(unit, amount, plussign, separators);
+    if(decimals(unit) > digits) result.chop(decimals(unit) - digits);
+
+    return result + QString(" ") + name(unit);
+}
+
+QString BitcoinUnits::floorHtmlWithUnit(int unit, const CAmount& amount, bool plussign, SeparatorStyle separators)
+{
+    QString str(floorWithUnit(unit, amount, plussign, separators));
+    str.replace(QChar(THIN_SP_CP), QString(THIN_SP_HTML));
+    return QString("<span style='white-space: nowrap;'>%1</span>").arg(str);
+}
+
+bool BitcoinUnits::parse(int unit, const QString &value, CAmount *val_out)
 {
     if(!valid(unit) || value.isEmpty())
         return false; // Refuse to parse invalid unit or empty string
@@ -171,23 +230,23 @@ bool KredsUnits::parse(int unit, const QString &value, CAmount *val_out)
     return ok;
 }
 
-QString KredsUnits::getAmountColumnTitle(int unit)
+QString BitcoinUnits::getAmountColumnTitle(int unit)
 {
     QString amountTitle = QObject::tr("Amount");
-    if (KredsUnits::valid(unit))
+    if (BitcoinUnits::valid(unit))
     {
-        amountTitle += " ("+KredsUnits::name(unit) + ")";
+        amountTitle += " ("+BitcoinUnits::name(unit) + ")";
     }
     return amountTitle;
 }
 
-int KredsUnits::rowCount(const QModelIndex &parent) const
+int BitcoinUnits::rowCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent);
     return unitlist.size();
 }
 
-QVariant KredsUnits::data(const QModelIndex &index, int role) const
+QVariant BitcoinUnits::data(const QModelIndex &index, int role) const
 {
     int row = index.row();
     if(row >= 0 && row < unitlist.size())
@@ -207,7 +266,7 @@ QVariant KredsUnits::data(const QModelIndex &index, int role) const
     return QVariant();
 }
 
-CAmount KredsUnits::maxMoney()
+CAmount BitcoinUnits::maxMoney()
 {
     return MAX_MONEY;
 }
