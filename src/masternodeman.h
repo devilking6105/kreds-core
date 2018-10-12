@@ -7,9 +7,16 @@
 #ifndef MASTERNODEMAN_H
 #define MASTERNODEMAN_H
 
-#include "masternode.h"
+//#include "bignum.h"
 #include "sync.h"
-
+#include "net.h"
+#include "key.h"
+//#include "core.h"
+#include "util.h"
+#include "script/script.h"
+#include "base58.h"
+#include "validation.h"
+#include "masternode.h"
 using namespace std;
 
 class CMasternodeMan;
