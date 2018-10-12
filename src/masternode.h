@@ -7,11 +7,19 @@
 #ifndef MASTERNODE_H
 #define MASTERNODE_H
 
-#include "key.h"
-#include "main.h"
+#include "utilstrencodings.h"//todo
+#include "arith_uint256.h"//todo
+#include "netmessagemaker.h"//todo
+#include "sync.h"
 #include "net.h"
-#include "spork.h"
-#include "timedata.h"
+#include "key.h"
+//#include "core.h"
+#include "util.h"
+#include "script/script.h"
+#include "base58.h"
+#include "validation.h"
+#include "net_processing.h"
+#include "masternode-pos.h"
 
 class CMasternode;
 class CMasternodeBroadcast;
