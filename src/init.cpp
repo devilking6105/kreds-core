@@ -21,6 +21,7 @@
 #include "consensus/validation.h"
 #include "httpserver.h"
 #include "httprpc.h"
+#include "validation.h"
 #include "key.h"
 #include "main.h"
 #include "miner.h"
