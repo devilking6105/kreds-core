@@ -1,81 +1,70 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_QT_RECEIVECOINSDIALOG_H
-#define KREDS_QT_RECEIVECOINSDIALOG_H
+#ifndef BITCOIN_QT_RECEIVEREQUESTDIALOG_H
+#define BITCOIN_QT_RECEIVEREQUESTDIALOG_H
 
-#include "guiutil.h"
+#include "walletmodel.h"
 
 #include <QDialog>
-#include <QHeaderView>
-#include <QItemSelection>
-#include <QKeyEvent>
-#include <QMenu>
-#include <QPoint>
-#include <QVariant>
+#include <QImage>
+#include <QLabel>
 
 class OptionsModel;
-class PlatformStyle;
-class WalletModel;
 
 namespace Ui {
-    class ReceiveCoinsDialog;
+    class ReceiveRequestDialog;
 }
 
 QT_BEGIN_NAMESPACE
-class QModelIndex;
+class QMenu;
 QT_END_NAMESPACE
 
-/** Dialog for requesting payment of kredss */
-class ReceiveCoinsDialog : public QDialog
+/* Label widget for QR code. This image can be dragged, dropped, copied and saved
+ * to disk.
+ */
+class QRImageWidget : public QLabel
 {
     Q_OBJECT
 
 public:
-    enum ColumnWidths {
-        DATE_COLUMN_WIDTH = 130,
-        LABEL_COLUMN_WIDTH = 120,
-        AMOUNT_MINIMUM_COLUMN_WIDTH = 180,
-        MINIMUM_COLUMN_WIDTH = 130
-    };
-
-    explicit ReceiveCoinsDialog(const PlatformStyle *platformStyle, QWidget *parent = 0);
-    ~ReceiveCoinsDialog();
-
-    void setModel(WalletModel *model);
+    explicit QRImageWidget(QWidget *parent = 0);
+    QImage exportImage();
 
 public Q_SLOTS:
-    void clear();
-    void reject();
-    void accept();
+    void saveImage();
+    void copyImage();
 
 protected:
-    virtual void keyPressEvent(QKeyEvent *event);
+    virtual void mousePressEvent(QMouseEvent *event);
+    virtual void contextMenuEvent(QContextMenuEvent *event);
 
 private:
-    Ui::ReceiveCoinsDialog *ui;
-    GUIUtil::TableViewLastColumnResizingFixer *columnResizingFixer;
-    WalletModel *model;
     QMenu *contextMenu;
-    const PlatformStyle *platformStyle;
-
-    QModelIndex selectedRow();
-    void copyColumnToClipboard(int column);
-    virtual void resizeEvent(QResizeEvent *event);
-
-private Q_SLOTS:
-    void on_receiveButton_clicked();
-    void on_showRequestButton_clicked();
-    void on_removeRequestButton_clicked();
-    void on_recentRequestsView_doubleClicked(const QModelIndex &index);
-    void recentRequestsView_selectionChanged(const QItemSelection &selected, const QItemSelection &deselected);
-    void updateDisplayUnit();
-    void showMenu(const QPoint &point);
-    void copyURI();
-    void copyLabel();
-    void copyMessage();
-    void copyAmount();
 };
 
-#endif // KREDS_QT_RECEIVECOINSDIALOG_H
+class ReceiveRequestDialog : public QDialog
+{
+    Q_OBJECT
+
+public:
+    explicit ReceiveRequestDialog(QWidget *parent = 0);
+    ~ReceiveRequestDialog();
+
+    void setModel(OptionsModel *model);
+    void setInfo(const SendCoinsRecipient &info);
+
+private Q_SLOTS:
+    void on_btnCopyURI_clicked();
+    void on_btnCopyAddress_clicked();
+
+    void update();
+
+private:
+    Ui::ReceiveRequestDialog *ui;
+    OptionsModel *model;
+    SendCoinsRecipient info;
+};
+
+#endif // BITCOIN_QT_RECEIVEREQUESTDIALOG_H
