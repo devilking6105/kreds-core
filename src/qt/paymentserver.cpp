@@ -1,16 +1,19 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
+// Copyright (c) 2014-2017 The Dash Core developers
+// Copyright (c) 2017-2018 The Proton Core developers
+// Copyright (c) 2018 The HTH Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "paymentserver.h"
 
-#include "kredsunits.h"
+#include "bitcoinunits.h"
 #include "guiutil.h"
 #include "optionsmodel.h"
 
 #include "base58.h"
 #include "chainparams.h"
-#include "policy/policy.h"
+#include "main.h" // For minRelayTxFee
 #include "ui_interface.h"
 #include "util.h"
 #include "wallet/wallet.h"
@@ -46,29 +49,26 @@
 #include <QUrlQuery>
 #endif
 
-const int KREDS_IPC_CONNECT_TIMEOUT = 1000; // milliseconds
-const QString KREDS_IPC_PREFIX("kreds:");
+const int BITCOIN_IPC_CONNECT_TIMEOUT = 1000; // milliseconds
+const QString BITCOIN_IPC_PREFIX("hth:");
 // BIP70 payment protocol messages
 const char* BIP70_MESSAGE_PAYMENTACK = "PaymentACK";
 const char* BIP70_MESSAGE_PAYMENTREQUEST = "PaymentRequest";
 // BIP71 payment protocol media types
-const char* BIP71_MIMETYPE_PAYMENT = "application/kreds-payment";
-const char* BIP71_MIMETYPE_PAYMENTACK = "application/kreds-paymentack";
-const char* BIP71_MIMETYPE_PAYMENTREQUEST = "application/kreds-paymentrequest";
+const char* BIP71_MIMETYPE_PAYMENT = "application/hth-payment";
+const char* BIP71_MIMETYPE_PAYMENTACK = "application/hth-paymentack";
+const char* BIP71_MIMETYPE_PAYMENTREQUEST = "application/hth-paymentrequest";
+// BIP70 max payment request size in bytes (DoS protection)
+const qint64 BIP70_MAX_PAYMENTREQUEST_SIZE = 50000;
 
-struct X509StoreDeleter {
-      void operator()(X509_STORE* b) {
-          X509_STORE_free(b);
-      }
-};
-
-struct X509Deleter {
-      void operator()(X509* b) { X509_free(b); }
-};
-
-namespace // Anon namespace
+X509_STORE* PaymentServer::certStore = NULL;
+void PaymentServer::freeCertStore()
 {
-    std::unique_ptr<X509_STORE, X509StoreDeleter> certStore;
+    if (PaymentServer::certStore != NULL)
+    {
+        X509_STORE_free(PaymentServer::certStore);
+        PaymentServer::certStore = NULL;
+    }
 }
 
 //
@@ -78,12 +78,12 @@ namespace // Anon namespace
 //
 static QString ipcServerName()
 {
-    QString name("KredsQt");
+    QString name("HTHQt");
 
     // Append a simple hash of the datadir
     // Note that GetDataDir(true) returns a different path
     // for -testnet versus main net
-    QString ddir(GUIUtil::boostPathToQString(GetDataDir(true)));
+    QString ddir(QString::fromStdString(GetDataDir(true).string()));
     name.append(QString::number(qHash(ddir)));
 
     return name;
@@ -110,15 +110,20 @@ static void ReportInvalidCertificate(const QSslCertificate& cert)
 //
 void PaymentServer::LoadRootCAs(X509_STORE* _store)
 {
+    if (PaymentServer::certStore == NULL)
+        atexit(PaymentServer::freeCertStore);
+    else
+        freeCertStore();
+
     // Unit tests mostly use this, to pass in fake root CAs:
     if (_store)
     {
-        certStore.reset(_store);
+        PaymentServer::certStore = _store;
         return;
     }
 
     // Normal execution, use either -rootcertificates or system certs:
-    certStore.reset(X509_STORE_new());
+    PaymentServer::certStore = X509_STORE_new();
 
     // Note: use "-system-" default here so that users can pass -rootcertificates=""
     // and get 'I don't like X.509 certificates, don't trust anybody' behavior:
@@ -165,11 +170,11 @@ void PaymentServer::LoadRootCAs(X509_STORE* _store)
         QByteArray certData = cert.toDer();
         const unsigned char *data = (const unsigned char *)certData.data();
 
-        std::unique_ptr<X509, X509Deleter> x509(d2i_X509(0, &data, certData.size()));
-        if (x509 && X509_STORE_add_cert(certStore.get(), x509.get()))
+        X509* x509 = d2i_X509(0, &data, certData.size());
+        if (x509 && X509_STORE_add_cert(PaymentServer::certStore, x509))
         {
-            // Note: X509_STORE increases the reference count to the X509 object,
-            // we still have to release our reference to it.
+            // Note: X509_STORE_free will free the X509* objects when
+            // the PaymentServer is destroyed
             ++nRootCerts;
         }
         else
@@ -207,18 +212,18 @@ void PaymentServer::ipcParseCommandLine(int argc, char* argv[])
         if (arg.startsWith("-"))
             continue;
 
-        // If the kreds: URI contains a payment request, we are not able to detect the
+        // If the hth: URI contains a payment request, we are not able to detect the
         // network as that would require fetching and parsing the payment request.
         // That means clicking such an URI which contains a testnet payment request
         // will start a mainnet instance and throw a "wrong network" error.
-        if (arg.startsWith(KREDS_IPC_PREFIX, Qt::CaseInsensitive)) // kreds: URI
+        if (arg.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) // hth: URI
         {
             savedPaymentRequests.append(arg);
 
             SendCoinsRecipient r;
-            if (GUIUtil::parseKredsURI(arg, &r) && !r.address.isEmpty())
+            if (GUIUtil::parseBitcoinURI(arg, &r) && !r.address.isEmpty())
             {
-                CKredsAddress address(r.address.toStdString());
+                CBitcoinAddress address(r.address.toStdString());
 
                 if (address.IsValid(Params(CBaseChainParams::MAIN)))
                 {
@@ -269,7 +274,7 @@ bool PaymentServer::ipcSendCommandLine()
     {
         QLocalSocket* socket = new QLocalSocket();
         socket->connectToServer(ipcServerName(), QIODevice::WriteOnly);
-        if (!socket->waitForConnected(KREDS_IPC_CONNECT_TIMEOUT))
+        if (!socket->waitForConnected(BITCOIN_IPC_CONNECT_TIMEOUT))
         {
             delete socket;
             socket = NULL;
@@ -284,7 +289,7 @@ bool PaymentServer::ipcSendCommandLine()
 
         socket->write(block);
         socket->flush();
-        socket->waitForBytesWritten(KREDS_IPC_CONNECT_TIMEOUT);
+        socket->waitForBytesWritten(BITCOIN_IPC_CONNECT_TIMEOUT);
         socket->disconnectFromServer();
 
         delete socket;
@@ -307,7 +312,7 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer) :
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
     // Install global event filter to catch QFileOpenEvents
-    // on Mac: sent when you click kreds: links
+    // on Mac: sent when you click hth: links
     // other OSes: helpful when dealing with payment request files
     if (parent)
         parent->installEventFilter(this);
@@ -324,7 +329,7 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer) :
         if (!uriServer->listen(name)) {
             // constructor is called early in init, so don't use "Q_EMIT message()" here
             QMessageBox::critical(0, tr("Payment request error"),
-                tr("Cannot start kreds: click-to-pay handler"));
+                tr("Cannot start hth: click-to-pay handler"));
         }
         else {
             connect(uriServer, SIGNAL(newConnection()), this, SLOT(handleURIConnection()));
@@ -339,7 +344,7 @@ PaymentServer::~PaymentServer()
 }
 
 //
-// OSX-specific way of handling kreds: URIs and PaymentRequest mime types.
+// OSX-specific way of handling hth: URIs and PaymentRequest mime types.
 // Also used by paymentservertests.cpp and when opening a payment request file
 // via "Open URI..." menu entry.
 //
@@ -365,7 +370,7 @@ void PaymentServer::initNetManager()
     if (netManager != NULL)
         delete netManager;
 
-    // netManager is used to fetch paymentrequests given in kreds: URIs
+    // netManager is used to fetch paymentrequests given in hth: URIs
     netManager = new QNetworkAccessManager(this);
 
     QNetworkProxy proxy;
@@ -405,7 +410,7 @@ void PaymentServer::handleURIOrFile(const QString& s)
         return;
     }
 
-    if (s.startsWith(KREDS_IPC_PREFIX, Qt::CaseInsensitive)) // kreds: URI
+    if (s.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) // hth: URI
     {
 #if QT_VERSION < 0x050000
         QUrl uri(s);
@@ -437,9 +442,9 @@ void PaymentServer::handleURIOrFile(const QString& s)
         else // normal URI
         {
             SendCoinsRecipient recipient;
-            if (GUIUtil::parseKredsURI(s, &recipient))
+            if (GUIUtil::parseBitcoinURI(s, &recipient))
             {
-                CKredsAddress address(recipient.address.toStdString());
+                CBitcoinAddress address(recipient.address.toStdString());
                 if (!address.IsValid()) {
                     Q_EMIT message(tr("URI handling"), tr("Invalid payment address %1").arg(recipient.address),
                         CClientUIInterface::MSG_ERROR);
@@ -449,7 +454,7 @@ void PaymentServer::handleURIOrFile(const QString& s)
             }
             else
                 Q_EMIT message(tr("URI handling"),
-                    tr("URI cannot be parsed! This can be caused by an invalid Kreds address or malformed URI parameters."),
+                    tr("URI cannot be parsed! This can be caused by an invalid HTH address or malformed URI parameters."),
                     CClientUIInterface::ICON_WARNING);
 
             return;
@@ -548,7 +553,7 @@ bool PaymentServer::processPaymentRequest(const PaymentRequestPlus& request, Sen
     recipient.paymentRequest = request;
     recipient.message = GUIUtil::HtmlEscape(request.getDetails().memo());
 
-    request.getMerchant(certStore.get(), recipient.authenticatedMerchant);
+    request.getMerchant(PaymentServer::certStore, recipient.authenticatedMerchant);
 
     QList<std::pair<CScript, CAmount> > sendingTos = request.getPayTo();
     QStringList addresses;
@@ -558,10 +563,10 @@ bool PaymentServer::processPaymentRequest(const PaymentRequestPlus& request, Sen
         CTxDestination dest;
         if (ExtractDestination(sendingTo.first, dest)) {
             // Append destination address
-            addresses.append(QString::fromStdString(CKredsAddress(dest).ToString()));
+            addresses.append(QString::fromStdString(CBitcoinAddress(dest).ToString()));
         }
         else if (!recipient.authenticatedMerchant.isEmpty()) {
-            // Unauthenticated payment requests to custom kreds addresses are not supported
+            // Unauthenticated payment requests to custom hth addresses are not supported
             // (there is no good way to tell the user where they are paying in a way they'd
             // have a chance of understanding).
             Q_EMIT message(tr("Payment request rejected"),
@@ -570,7 +575,7 @@ bool PaymentServer::processPaymentRequest(const PaymentRequestPlus& request, Sen
             return false;
         }
 
-        // Kreds amounts are stored as (optional) uint64 in the protobuf messages (see paymentrequest.proto),
+        // HTH amounts are stored as (optional) uint64 in the protobuf messages (see paymentrequest.proto),
         // but CAmount is defined as int64_t. Because of that we need to verify that amounts are in a valid range
         // and no overflow has happened.
         if (!verifyAmount(sendingTo.second)) {
@@ -580,9 +585,9 @@ bool PaymentServer::processPaymentRequest(const PaymentRequestPlus& request, Sen
 
         // Extract and check amounts
         CTxOut txOut(sendingTo.second, sendingTo.first);
-        if (txOut.IsDust(dustRelayFee)) {
+        if (txOut.IsDust(::minRelayTxFee)) {
             Q_EMIT message(tr("Payment request error"), tr("Requested payment amount of %1 is too small (considered dust).")
-                .arg(KredsUnits::formatWithUnit(optionsModel->getDisplayUnit(), sendingTo.second)),
+                .arg(BitcoinUnits::formatWithUnit(optionsModel->getDisplayUnit(), sendingTo.second)),
                 CClientUIInterface::MSG_ERROR);
 
             return false;
@@ -747,9 +752,9 @@ void PaymentServer::reportSslErrors(QNetworkReply* reply, const QList<QSslError>
     Q_EMIT message(tr("Network request error"), errString, CClientUIInterface::MSG_ERROR);
 }
 
-void PaymentServer::setOptionsModel(OptionsModel *_optionsModel)
+void PaymentServer::setOptionsModel(OptionsModel *optionsModel)
 {
-    this->optionsModel = _optionsModel;
+    this->optionsModel = optionsModel;
 }
 
 void PaymentServer::handlePaymentACK(const QString& paymentACKMsg)
@@ -804,9 +809,4 @@ bool PaymentServer::verifyAmount(const CAmount& requestAmount)
             .arg(MAX_MONEY);
     }
     return fVerified;
-}
-
-X509_STORE* PaymentServer::getCertStore()
-{
-    return certStore.get();
 }
