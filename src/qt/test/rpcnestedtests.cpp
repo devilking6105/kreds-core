@@ -5,8 +5,7 @@
 #include "rpcnestedtests.h"
 
 #include "chainparams.h"
-#include "consensus/validation.h"
-#include "validation.h"
+#include "consensus.h"
 #include "rpc/register.h"
 #include "rpc/server.h"
 #include "rpcconsole.h"
