@@ -3,15 +3,19 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include "activemasternode.h"
-#include "addrman.h"
-#include "darksend.h"
-#include "governance.h"
-#include "masternode-payments.h"
-#include "masternode-sync.h"
 #include "masternodeman.h"
-#include "netfulfilledman.h"
+#include "masternode.h"
+#include "activemasternode.h"
+#include "signhelper_mn.h"
+#include "sync.h"
+#include "validation.h"
+#include "consensus/validation.h"
 #include "util.h"
+#include "addrman.h"
+#include "net_processing.h"
+#include "txmempool.h"
+#include <boost/lexical_cast.hpp>
+#include <boost/filesystem.hpp>
 
 /** Masternode manager */
 CMasternodeMan mnodeman;
