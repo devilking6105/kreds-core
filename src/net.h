@@ -6,9 +6,14 @@
 #ifndef BITCOIN_NET_H
 #define BITCOIN_NET_H
 
+#include "addrdb.h"
+#include "addrman.h"
+#include "amount.h"
 #include "bloom.h"
 #include "compat.h"
+#include "hash.h"
 #include "limitedmap.h"
+#include "netaddress.h"
 #include "netbase.h"
 #include "protocol.h"
 #include "random.h"
@@ -16,9 +21,14 @@
 #include "sync.h"
 #include "uint256.h"
 #include "util.h"
+#include "threadinterrupt.h"
 
+#include <atomic>
 #include <deque>
 #include <stdint.h>
+#include <thread>
+#include <memory>
+#include <condition_variable>
 
 #ifndef WIN32
 #include <arpa/inet.h>
