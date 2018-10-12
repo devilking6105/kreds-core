@@ -1,15 +1,16 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_QT_WALLETVIEW_H
-#define KREDS_QT_WALLETVIEW_H
+#ifndef BITCOIN_QT_WALLETVIEW_H
+#define BITCOIN_QT_WALLETVIEW_H
 
 #include "amount.h"
 #include "masternodelist.h"
+
 #include <QStackedWidget>
 
-class KredsGUI;
+class BitcoinGUI;
 class ClientModel;
 class OverviewPage;
 class PlatformStyle;
@@ -21,6 +22,7 @@ class WalletModel;
 class AddressBookPage;
 
 QT_BEGIN_NAMESPACE
+class QLabel;
 class QModelIndex;
 class QProgressDialog;
 QT_END_NAMESPACE
@@ -39,13 +41,13 @@ public:
     explicit WalletView(const PlatformStyle *platformStyle, QWidget *parent);
     ~WalletView();
 
-    void setKredsGUI(KredsGUI *gui);
+    void setBitcoinGUI(BitcoinGUI *gui);
     /** Set the client model.
         The client model represents the part of the core that communicates with the P2P network, and is wallet-agnostic.
     */
     void setClientModel(ClientModel *clientModel);
     /** Set the wallet model.
-        The wallet model represents a kreds wallet, and offers access to the list of transactions, address book and sending
+        The wallet model represents a bitcoin wallet, and offers access to the list of transactions, address book and sending
         functionality.
     */
     void setWalletModel(WalletModel *walletModel);
@@ -57,7 +59,6 @@ public:
 private:
     ClientModel *clientModel;
     WalletModel *walletModel;
-    void *unlockContext;
 
     OverviewPage *overviewPage;
     QWidget *transactionsPage;
@@ -65,24 +66,23 @@ private:
     SendCoinsDialog *sendCoinsPage;
     AddressBookPage *usedSendingAddressesPage;
     AddressBookPage *usedReceivingAddressesPage;
-	MasternodeList* masternodeListPage;
-	
-    TransactionView *transactionView;
-	
-    QProgressDialog *progressDialog;
-    const PlatformStyle *platformStyle;
+    MasternodeList *masternodeListPage;
 
+    TransactionView *transactionView;
+
+    QProgressDialog *progressDialog;
+    QLabel *transactionSum;
+    const PlatformStyle *platformStyle;
 
 public Q_SLOTS:
     /** Switch to overview (home) page */
     void gotoOverviewPage();
     /** Switch to history (transactions) page */
     void gotoHistoryPage();
-    /** Switch to receive coins page */
-	/** Switch to masternode page */
+    /** Switch to masternode page */
     void gotoMasternodePage();
+    /** Switch to receive coins page */
     void gotoReceiveCoinsPage();
-	//void gotoBip38Tool()
     /** Switch to send coins page */
     void gotoSendCoinsPage(QString addr = "");
 
@@ -92,7 +92,6 @@ public Q_SLOTS:
     void gotoVerifyMessageTab(QString addr = "");
 
     /** Show incoming transaction notification for new transactions.
-
         The new items are those between start and end inclusive, under the given parent item.
     */
     void processNewTransaction(const QModelIndex& parent, int start, int /*end*/);
@@ -103,9 +102,9 @@ public Q_SLOTS:
     /** Change encrypted wallet passphrase */
     void changePassphrase();
     /** Ask for passphrase to unlock wallet temporarily */
-    void unlockWallet();
-    /** Ask for passphrase to unlock wallet and return context*/
-    void requestUnlockWallet();
+    void unlockWallet(bool fAnonymizeOnly=false);
+    /** Lock wallet */
+    void lockWallet();
 
     /** Show used sending addresses */
     void usedSendingAddresses();
@@ -118,8 +117,8 @@ public Q_SLOTS:
     /** Show progress dialog e.g. for rescan */
     void showProgress(const QString &title, int nProgress);
 
-    /** User has requested more information about the out of sync state */
-    void requestedSyncWarningInfo();
+    /** Update selected HTH amount from transactionview */
+    void trxAmount(QString amount);
 
 Q_SIGNALS:
     /** Signal that we want to show the main window */
@@ -128,12 +127,8 @@ Q_SIGNALS:
     void message(const QString &title, const QString &message, unsigned int style);
     /** Encryption status of wallet changed */
     void encryptionStatusChanged(int status);
-    /** HD-Enabled status of wallet changed (only possible during startup) */
-    void hdEnabledStatusChanged(int hdEnabled);
     /** Notify that a new transaction appeared */
     void incomingTransaction(const QString& date, int unit, const CAmount& amount, const QString& type, const QString& address, const QString& label);
-    /** Notify that the out of sync warning icon has been pressed */
-    void outOfSyncWarningClicked();
 };
 
-#endif // KREDS_QT_WALLETVIEW_H
+#endif // BITCOIN_QT_WALLETVIEW_H
