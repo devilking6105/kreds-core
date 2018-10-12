@@ -11,6 +11,7 @@
 #include "governance.h"
 #include "masternode.h"
 #include "masternode-payments.h"
+#include "signhelper_mn.h"//todo++
 #include "masternode-sync.h"
 #include "masternodeman.h"
 #include "util.h"
