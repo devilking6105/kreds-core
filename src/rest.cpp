@@ -11,6 +11,7 @@
 #include "httpserver.h"
 #include "rpcserver.h"
 #include "streams.h"
+#include "validation.h"
 #include "sync.h"
 #include "txmempool.h"
 #include "utilstrencodings.h"
