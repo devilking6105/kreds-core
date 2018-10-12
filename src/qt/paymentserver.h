@@ -1,12 +1,12 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_QT_PAYMENTSERVER_H
-#define KREDS_QT_PAYMENTSERVER_H
+#ifndef BITCOIN_QT_PAYMENTSERVER_H
+#define BITCOIN_QT_PAYMENTSERVER_H
 
 // This class handles payment requests from clicking on
-// kreds: URIs
+// hth: URIs
 //
 // This is somewhat tricky, because we have to deal with
 // the situation where the user clicks on a link during
@@ -21,10 +21,10 @@
 //
 // When startup is finished and the main window is
 // shown, a signal is sent to slot uiReady(), which
-// emits a receivedURI() signal for any payment
+// emits a receivedURL() signal for any payment
 // requests that happened during startup.
 //
-// After startup, receivedURI() happens as usual.
+// After startup, receivedURL() happens as usual.
 //
 // This class has one more feature: a static
 // method that finds URIs passed in the command line
@@ -53,7 +53,7 @@ class QUrl;
 QT_END_NAMESPACE
 
 // BIP70 max payment request size in bytes (DoS protection)
-static const qint64 BIP70_MAX_PAYMENTREQUEST_SIZE = 50000;
+extern const qint64 BIP70_MAX_PAYMENTREQUEST_SIZE;
 
 class PaymentServer : public QObject
 {
@@ -83,7 +83,7 @@ public:
     static void LoadRootCAs(X509_STORE* store = NULL);
 
     // Return certificate store
-    static X509_STORE* getCertStore();
+    static X509_STORE* getCertStore() { return certStore; }
 
     // OptionsModel is used for getting proxy settings and display unit
     void setOptionsModel(OptionsModel *optionsModel);
@@ -140,9 +140,12 @@ private:
     bool saveURIs;                      // true during startup
     QLocalServer* uriServer;
 
+    static X509_STORE* certStore;       // Trusted root certificates
+    static void freeCertStore();
+
     QNetworkAccessManager* netManager;  // Used to fetch payment requests
 
     OptionsModel *optionsModel;
 };
 
-#endif // KREDS_QT_PAYMENTSERVER_H
+#endif // BITCOIN_QT_PAYMENTSERVER_H
