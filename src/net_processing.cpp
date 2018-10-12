@@ -20,6 +20,7 @@
 #include "masternodeman.h"//
 #include "validation.h"
 #include "masternode.h" //
+#include "masternode-pos.h //
 #include "spork.h"//
 #include "activemasternode.h"//
 #include "merkleblock.h"
