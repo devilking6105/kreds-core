@@ -1,27 +1,26 @@
-// Copyright (c) 2011-2016 The Kreds Developers
+// Copyright (c) 2011-2015 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef KREDS_QT_SPLASHSCREEN_H
-#define KREDS_QT_SPLASHSCREEN_H
+#ifndef BITCOIN_QT_SPLASHSCREEN_H
+#define BITCOIN_QT_SPLASHSCREEN_H
 
 #include <QSplashScreen>
 
-class CWallet;
 class NetworkStyle;
 
 /** Class for the splashscreen with information of the running client.
  *
- * @note this is intentionally not a QSplashScreen. Kreds initialization
+ * @note this is intentionally not a QSplashScreen. Bitcoin Core initialization
  * can take a long time, and in that case a progress window that cannot be
  * moved around and minimized has turned out to be frustrating to the user.
  */
-class SplashScreen : public QSplashScreen/* QWidget */
+class SplashScreen : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit SplashScreen(Qt::WindowFlags f, const QPixmap &pixmap);
+    explicit SplashScreen(Qt::WindowFlags f, const NetworkStyle *networkStyle);
     ~SplashScreen();
 
 protected:
@@ -40,15 +39,11 @@ private:
     void subscribeToCoreSignals();
     /** Disconnect core signals to splash screen */
     void unsubscribeFromCoreSignals();
-    /** Connect wallet signals to splash screen */
-    void ConnectWallet(CWallet*);
 
     QPixmap pixmap;
     QString curMessage;
     QColor curColor;
     int curAlignment;
-
-    QList<CWallet*> connectedWallets;
 };
 
-#endif // KREDS_QT_SPLASHSCREEN_H
+#endif // BITCOIN_QT_SPLASHSCREEN_H
